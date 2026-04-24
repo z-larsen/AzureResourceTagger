@@ -2,6 +2,11 @@
 
 All notable changes to the Azure Resource Tagger will be documented in this file.
 
+## [1.1.1] - 2026-04-23
+
+### Fixed
+- Remove Tags dropdown now auto-populates when scan completes (no longer requires manual Refresh click)
+
 ## [1.1.0] - 2026-04-23
 
 ### Added

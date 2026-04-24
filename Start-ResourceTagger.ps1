@@ -413,6 +413,25 @@ $ui.ScanButton.Add_Click({
         $ui.ApplyTagsButton.IsEnabled = $true
         $ui.ScanButton.IsEnabled    = $true
 
+        # Auto-populate Remove Tags dropdown
+        $ui.RemoveTagSelector.Items.Clear()
+        $removeTagKeys = @{}
+        foreach ($rg in $script:AllRGs) {
+            $tagMap = ConvertTo-TagHashtable $rg.tags
+            foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
+        }
+        foreach ($res in $script:AllResources) {
+            $tagMap = ConvertTo-TagHashtable $res.tags
+            foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
+        }
+        foreach ($k in ($removeTagKeys.Keys | Sort-Object)) {
+            $ui.RemoveTagSelector.Items.Add($k) | Out-Null
+        }
+        if ($ui.RemoveTagSelector.Items.Count -gt 0) {
+            $ui.RemoveTagSelector.SelectedIndex = 0
+        }
+        $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
+
         Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
     }
     catch {
