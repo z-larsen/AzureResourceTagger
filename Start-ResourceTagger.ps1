@@ -175,6 +175,70 @@ function Search-AzGraphSafe {
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Tenant picker dialog
+# ─────────────────────────────────────────────────────────────────
+function Show-TenantPicker {
+    param([object[]]$Tenants)
+
+    $pickerXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Select Tenant" Width="520" Height="420"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Background="#F0F0F0" FontFamily="Segoe UI">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="Select the tenant to use:" FontSize="14" FontWeight="SemiBold"
+                   Foreground="#333" Margin="0,0,0,12"/>
+        <ListBox Grid.Row="1" Name="TenantList" FontSize="13" Margin="0,0,0,12"
+                 BorderBrush="#CCC" BorderThickness="1"/>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="OkBtn" Content="Select" Width="90" Height="32" FontSize="13" FontWeight="SemiBold"
+                    Background="#0078D4" Foreground="White" BorderThickness="0" Margin="0,0,8,0" IsEnabled="False"/>
+            <Button Name="CancelBtn" Content="Cancel" Width="90" Height="32" FontSize="13"
+                    Background="White" Foreground="#333" BorderBrush="#CCC" BorderThickness="1"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+
+    $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($pickerXaml))
+    $dlg = [System.Windows.Markup.XamlReader]::Load($rdr)
+
+    $list      = $dlg.FindName('TenantList')
+    $okBtn     = $dlg.FindName('OkBtn')
+    $cancelBtn = $dlg.FindName('CancelBtn')
+
+    foreach ($t in $Tenants) {
+        $display = if ($t.Name -and $t.Name -ne $t.TenantId) {
+            "$($t.Name)  ($($t.TenantId))"
+        } else {
+            "$($t.TenantId)"
+        }
+        $item = [System.Windows.Controls.ListBoxItem]::new()
+        $item.Content = $display
+        $item.Tag = $t.TenantId
+        $list.Items.Add($item) | Out-Null
+    }
+
+    $list.Add_SelectionChanged({ $okBtn.IsEnabled = ($list.SelectedItem -ne $null) })
+    $list.Add_MouseDoubleClick({ if ($list.SelectedItem) { $dlg.DialogResult = $true; $dlg.Close() } })
+    $okBtn.Add_Click({ $dlg.DialogResult = $true; $dlg.Close() })
+    $cancelBtn.Add_Click({ $dlg.DialogResult = $false; $dlg.Close() })
+
+    if ($list.Items.Count -gt 0) { $list.SelectedIndex = 0 }
+
+    $picked = $dlg.ShowDialog()
+    if ($picked -and $list.SelectedItem) {
+        return $list.SelectedItem.Tag
+    }
+    return $null
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Shared connect logic
 # ─────────────────────────────────────────────────────────────────
 function Connect-ToAzure {
@@ -199,6 +263,36 @@ function Connect-ToAzure {
             $window.WindowState = 'Minimized'
             try {
                 Connect-AzAccount -Environment $AzureEnvironment -ErrorAction Stop | Out-Null
+            } finally {
+                $window.WindowState = 'Normal'
+                $window.Activate()
+            }
+            $ctx = Get-AzContext
+        }
+
+        # List accessible tenants and show picker
+        Update-Status 'Loading accessible tenants...' 20
+        $tenants = @(Get-AzTenant -ErrorAction SilentlyContinue)
+
+        if ($tenants.Count -eq 0) {
+            throw 'No accessible tenants found.'
+        }
+
+        $selectedTenantId = Show-TenantPicker -Tenants $tenants
+        if (-not $selectedTenantId) {
+            Update-Status 'Tenant selection cancelled.' 0
+            $btn.Content = "$envLabel Tenant"
+            $ui.CommercialButton.IsEnabled = $true
+            $ui.GovButton.IsEnabled        = $true
+            return
+        }
+
+        # Switch tenant if needed
+        if ($selectedTenantId -ne $ctx.Tenant.Id) {
+            Update-Status "Switching to tenant $selectedTenantId..." 25
+            $window.WindowState = 'Minimized'
+            try {
+                Connect-AzAccount -Environment $AzureEnvironment -TenantId $selectedTenantId -ErrorAction Stop | Out-Null
             } finally {
                 $window.WindowState = 'Normal'
                 $window.Activate()
