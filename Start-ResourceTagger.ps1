@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:ScriptRoot = $PSScriptRoot
-$script:Version    = '1.0.0'
+$script:Version    = '1.1.0'
 
 # ─────────────────────────────────────────────────────────────────
 # WPF bootstrap
@@ -74,6 +74,9 @@ $controlNames = @(
     'TagQueueGrid','ClearTagsButton','RemoveTagButton',
     'ApplyScope','OverwriteCheck','DryRunCheck',
     'ApplyTagsButton','ApplyStatusText','ApplyResultsGrid',
+    'RemoveTagSelector','RemoveTagValueFilter','RemoveTagValuePlaceholder',
+    'RefreshTagListButton','RemoveScope','RemoveDryRunCheck',
+    'RemoveTagsButton','RemoveStatusText','RemoveResultsGrid',
     'ProgressBar','StatusText','MainTabs'
 )
 
@@ -644,6 +647,155 @@ $ui.ApplyTagsButton.Add_Click({
         [System.Windows.MessageBox]::Show(
             "Tag application failed:`n$($_.Exception.Message)",
             'Apply Error', 'OK', 'Error') | Out-Null
+    }
+})
+
+# ─────────────────────────────────────────────────────────────────
+# REMOVE TAGS - Placeholder text behavior
+# ─────────────────────────────────────────────────────────────────
+$ui.RemoveTagValueFilter.Add_GotFocus({
+    $ui.RemoveTagValuePlaceholder.Visibility = 'Collapsed'
+})
+$ui.RemoveTagValueFilter.Add_LostFocus({
+    if ([string]::IsNullOrWhiteSpace($ui.RemoveTagValueFilter.Text)) {
+        $ui.RemoveTagValuePlaceholder.Visibility = 'Visible'
+    }
+})
+
+# ─────────────────────────────────────────────────────────────────
+# REMOVE TAGS - Refresh tag list from scan data
+# ─────────────────────────────────────────────────────────────────
+$ui.RefreshTagListButton.Add_Click({
+    $ui.RemoveTagSelector.Items.Clear()
+    $tagKeys = @{}
+
+    foreach ($rg in $script:AllRGs) {
+        $tagMap = ConvertTo-TagHashtable $rg.tags
+        foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
+    }
+    foreach ($res in $script:AllResources) {
+        $tagMap = ConvertTo-TagHashtable $res.tags
+        foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
+    }
+
+    foreach ($k in ($tagKeys.Keys | Sort-Object)) {
+        $ui.RemoveTagSelector.Items.Add($k) | Out-Null
+    }
+    if ($ui.RemoveTagSelector.Items.Count -gt 0) {
+        $ui.RemoveTagSelector.SelectedIndex = 0
+    }
+    $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
+    Update-Status "Tag list refreshed - $(@($tagKeys.Keys).Count) unique keys found" 100
+})
+
+# ─────────────────────────────────────────────────────────────────
+# REMOVE TAGS - Execute removal
+# ─────────────────────────────────────────────────────────────────
+$ui.RemoveTagsButton.Add_Click({
+    $tagToRemove = $ui.RemoveTagSelector.Text.Trim()
+    if (-not $tagToRemove) {
+        [System.Windows.MessageBox]::Show('Select or enter a tag name to remove.', 'No Tag Selected', 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    $valueFilter = $ui.RemoveTagValueFilter.Text.Trim()
+    $isDryRun    = $ui.RemoveDryRunCheck.IsChecked
+    $scopeIdx    = $ui.RemoveScope.SelectedIndex
+    $modeLabel   = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
+
+    if (-not $isDryRun) {
+        $scopeDesc = @('all RGs', 'all resources', 'all RGs and resources')[$scopeIdx]
+        $removeMsg = "You are about to REMOVE tag '$tagToRemove' from $scopeDesc."
+        if ($valueFilter) { $removeMsg += " (only where value = '$valueFilter')" }
+        $removeMsg += "`n`nThis is a LIVE operation. Continue?"
+        $confirm = [System.Windows.MessageBox]::Show($removeMsg, 'Confirm Tag Removal', 'YesNo', 'Warning')
+        if ($confirm -ne 'Yes') { return }
+    }
+
+    try {
+        $ui.RemoveTagsButton.IsEnabled = $false
+        $results = [System.Collections.Generic.List[PSObject]]::new()
+
+        # Build target list based on scope
+        $targets = [System.Collections.Generic.List[PSObject]]::new()
+
+        if ($scopeIdx -eq 0 -or $scopeIdx -eq 2) {
+            foreach ($rg in $script:AllRGs) {
+                $tagMap = ConvertTo-TagHashtable $rg.tags
+                if ($tagMap.ContainsKey($tagToRemove)) {
+                    if (-not $valueFilter -or $tagMap[$tagToRemove] -eq $valueFilter) {
+                        $targets.Add([PSCustomObject]@{
+                            Id = $rg.id; Name = $rg.name; Kind = 'ResourceGroup'
+                            CurrentValue = $tagMap[$tagToRemove]
+                        })
+                    }
+                }
+            }
+        }
+        if ($scopeIdx -eq 1 -or $scopeIdx -eq 2) {
+            foreach ($res in $script:AllResources) {
+                $tagMap = ConvertTo-TagHashtable $res.tags
+                if ($tagMap.ContainsKey($tagToRemove)) {
+                    if (-not $valueFilter -or $tagMap[$tagToRemove] -eq $valueFilter) {
+                        $targets.Add([PSCustomObject]@{
+                            Id = $res.id; Name = $res.name; Kind = ($res.type -split '/')[-1]
+                            CurrentValue = $tagMap[$tagToRemove]
+                        })
+                    }
+                }
+            }
+        }
+
+        $total = @($targets).Count
+        $done  = 0
+
+        foreach ($target in $targets) {
+            $done++
+            $pct = [math]::Round(($done / [math]::Max($total,1)) * 100)
+            Update-Status "[$modeLabel] Removing '$tagToRemove' - $done / $total - $($target.Name)" $pct
+
+            $status = 'Success'
+            $detail = ''
+
+            try {
+                if ($isDryRun) {
+                    $status = 'DryRun'
+                    $detail = "Would remove $tagToRemove=$($target.CurrentValue)"
+                } else {
+                    $tagToDelete = @{ $tagToRemove = $target.CurrentValue }
+                    Update-AzTag -ResourceId $target.Id -Tag $tagToDelete -Operation Delete -ErrorAction Stop | Out-Null
+                    $detail = "Removed $tagToRemove=$($target.CurrentValue)"
+                }
+            }
+            catch {
+                $status = 'Error'
+                $detail = $_.Exception.Message
+            }
+
+            $results.Add([PSCustomObject]@{
+                Resource      = $target.Name
+                Kind          = $target.Kind
+                Status        = $status
+                PreviousValue = $target.CurrentValue
+                Detail        = $detail
+            })
+        }
+
+        $ui.RemoveResultsGrid.ItemsSource = @($results)
+
+        $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
+        $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
+        $ui.RemoveStatusText.Text = "$modeLabel complete - $successCount succeeded, $errorCount failed out of $total"
+
+        $ui.RemoveTagsButton.IsEnabled = $true
+        Update-Status "$modeLabel removal complete - $total targets processed" 100
+    }
+    catch {
+        $ui.RemoveTagsButton.IsEnabled = $true
+        Update-Status "Remove error: $($_.Exception.Message)" 0
+        [System.Windows.MessageBox]::Show(
+            "Tag removal failed:`n$($_.Exception.Message)",
+            'Remove Error', 'OK', 'Error') | Out-Null
     }
 })
 

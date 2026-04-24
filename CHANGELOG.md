@@ -2,6 +2,17 @@
 
 All notable changes to the Azure Resource Tagger will be documented in this file.
 
+## [1.1.0] - 2026-04-23
+
+### Added
+- **Remove Tags** tab for bulk tag removal
+  - Dropdown populated from scan data with all discovered tag keys
+  - Optional value filter to remove only specific tag values
+  - Scope selection: all RGs, all resources, or both
+  - Dry run mode (on by default) with confirmation dialog for live operations
+  - Results grid with previous value column
+- Tag removal uses `Update-AzTag -Operation Delete` (surgical key removal, preserves other tags)
+
 ## [1.0.0] - 2026-04-23
 
 ### Added

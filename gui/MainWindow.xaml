@@ -390,6 +390,109 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- TAB 5: Remove Tags -->
+            <TabItem Header="  Remove Tags  " FontSize="13">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="20">
+                    <StackPanel>
+
+                        <!-- Tag Selection -->
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="Select Tag to Remove" FontSize="16" FontWeight="SemiBold" Foreground="#333" Margin="0,0,0,12"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="Tag Name:" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"
+                                               FontSize="13" Margin="0,0,12,8"/>
+                                    <ComboBox x:Name="RemoveTagSelector" Grid.Row="0" Grid.Column="1" Width="350"
+                                              HorizontalAlignment="Left" FontSize="13" Margin="0,0,12,8" IsEditable="True"/>
+                                    <Button x:Name="RefreshTagListButton" Content="Refresh List" Grid.Row="0" Grid.Column="2"
+                                            Style="{StaticResource AzureButton}" VerticalAlignment="Top"/>
+                                    <TextBlock Text="Tag Value Filter:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"
+                                               FontSize="13" Margin="0,0,12,0"/>
+                                    <Grid Grid.Row="1" Grid.Column="1">
+                                        <TextBox x:Name="RemoveTagValueFilter" Width="350" HorizontalAlignment="Left"
+                                                 FontSize="13" Padding="4" Background="White"/>
+                                        <TextBlock x:Name="RemoveTagValuePlaceholder" Text="Leave blank to remove from all (any value)"
+                                                   FontSize="12" Foreground="#AAAAAA" Padding="6,5,4,4" IsHitTestVisible="False"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Remove Scope -->
+                        <Border Style="{StaticResource Card}" Margin="6,16,6,6">
+                            <StackPanel>
+                                <TextBlock Text="Remove Scope" FontSize="16" FontWeight="SemiBold" Foreground="#333" Margin="0,0,0,12"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="Remove From:" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"
+                                               FontSize="13" Margin="0,0,12,8"/>
+                                    <ComboBox x:Name="RemoveScope" Grid.Row="0" Grid.Column="1" Width="350" HorizontalAlignment="Left"
+                                              FontSize="13" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="All Resource Groups in Scope" IsSelected="True"/>
+                                        <ComboBoxItem Content="All Resources in Scope"/>
+                                        <ComboBoxItem Content="All Resource Groups and Resources"/>
+                                    </ComboBox>
+                                    <CheckBox x:Name="RemoveDryRunCheck" Grid.Row="1" Grid.Column="1"
+                                              Content="Dry run (preview only - don't remove)"
+                                              FontSize="13" IsChecked="True"/>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                                    <Button x:Name="RemoveTagsButton" Content="Remove Tags"
+                                            Background="#D13438" Foreground="White" BorderBrush="#A4262C"
+                                            BorderThickness="1" Padding="16,8" FontSize="13" FontWeight="SemiBold" Cursor="Hand"
+                                            IsEnabled="False">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        CornerRadius="3" Padding="{TemplateBinding Padding}">
+                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#A4262C"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsEnabled" Value="False">
+                                                        <Setter Property="Opacity" Value="0.5"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                    <TextBlock x:Name="RemoveStatusText" Text="" FontSize="13" Foreground="#666"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Remove Results -->
+                        <TextBlock Text="Results" FontSize="16" FontWeight="SemiBold" Foreground="#333" Margin="6,16,0,6"/>
+                        <Border Style="{StaticResource Card}" MinHeight="150">
+                            <DataGrid x:Name="RemoveResultsGrid" MinHeight="130"/>
+                        </Border>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
         </TabControl>
     </DockPanel>
 </Window>

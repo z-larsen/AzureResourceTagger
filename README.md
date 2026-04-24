@@ -3,7 +3,7 @@
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell&logoColor=white)
 ![Azure Az Modules](https://img.shields.io/badge/Azure-Az%20Modules-0078D4?logo=microsoftazure&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-![Version 1.0.0](https://img.shields.io/badge/Version-1.0.0-brightgreen)
+![Version 1.1.0](https://img.shields.io/badge/Version-1.1.0-brightgreen)
 
 A PowerShell WPF application that scans an Azure subscription for existing tags
 across resource groups and resources, identifies tagging gaps against a
@@ -35,7 +35,8 @@ The Azure Resource Tagger scans what exists, determines what's missing and bulk 
 | **Gap Analysis** | Resource Graph + required-tag list | Which RGs are missing which required tags |
 | **Coverage Metrics** | Resource Graph | Tag coverage %, untagged RG count, unique tag keys |
 | **Bulk Tagging** | ARM Tags API (`Update-AzTag -Operation Merge`) | Apply one or more tags to RGs or resources at scale |
-| **Dry Run** | Local preview | Preview what would be tagged before committing |
+| **Tag Removal** | ARM Tags API (`Update-AzTag -Operation Delete`) | Remove tags by key (with optional value filter) at scale |
+| **Dry Run** | Local preview | Preview what would be changed before committing |
 | **CSV Export** | Scan results | Full tag inventory exported for offline analysis |
 
 ---
@@ -89,6 +90,14 @@ Install-Module Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser
 - Confirmation dialog before any live operation
 - Results grid shows per-resource success/failure detail
 
+### Remove Tags
+- Select a tag key from a dropdown populated from scan data (or type manually)
+- Optional value filter to remove only specific tag values
+- Choose scope: all RGs, all resources, or both
+- **Dry Run** mode previews removals without executing (enabled by default)
+- Confirmation dialog before any live removal
+- Results grid shows per-resource removal detail with previous value
+
 ---
 
 ## Required Permissions
@@ -96,7 +105,7 @@ Install-Module Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser
 | Action | Minimum Role |
 |--------|-------------|
 | Scan tags | **Reader** on the subscription |
-| Apply tags | **Tag Contributor** on the target scope |
+| Apply/remove tags | **Tag Contributor** on the target scope |
 
 ---
 
