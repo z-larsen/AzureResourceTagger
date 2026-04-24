@@ -546,7 +546,12 @@ $ui.ApplyTagsButton.Add_Click({
 
     $modeLabel = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
 
-    if (-not $isDryRun) {
+    if ($isDryRun) {
+        $msg = "Preview applying $($tagsToApply.Count) tag(s) to resources in $($sub.Name).`n`nProceed with dry run?"
+        $confirm = [System.Windows.MessageBox]::Show(
+            $msg, 'Confirm Dry Run', 'YesNo', 'Question')
+        if ($confirm -ne 'Yes') { return }
+    } else {
         $msg = "You are about to apply $($tagsToApply.Count) tag(s) to resources in $($sub.Name)." + "`n`nThis is a LIVE operation. Continue?"
         $confirm = [System.Windows.MessageBox]::Show(
             $msg, 'Confirm Tag Application', 'YesNo', 'Warning')
@@ -722,8 +727,14 @@ $ui.RemoveTagsButton.Add_Click({
     $scopeIdx    = $ui.RemoveScope.SelectedIndex
     $modeLabel   = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
 
-    if (-not $isDryRun) {
-        $scopeDesc = @('all RGs', 'all resources', 'all RGs and resources')[$scopeIdx]
+    $scopeDesc = @('all RGs', 'all resources', 'all RGs and resources')[$scopeIdx]
+    if ($isDryRun) {
+        $removeMsg = "Preview removing tag '$tagToRemove' from $scopeDesc."
+        if ($valueFilter) { $removeMsg += " (only where value = '$valueFilter')" }
+        $removeMsg += "`n`nProceed with dry run?"
+        $confirm = [System.Windows.MessageBox]::Show($removeMsg, 'Confirm Dry Run', 'YesNo', 'Question')
+        if ($confirm -ne 'Yes') { return }
+    } else {
         $removeMsg = "You are about to REMOVE tag '$tagToRemove' from $scopeDesc."
         if ($valueFilter) { $removeMsg += " (only where value = '$valueFilter')" }
         $removeMsg += "`n`nThis is a LIVE operation. Continue?"
