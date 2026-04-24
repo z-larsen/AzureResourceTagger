@@ -748,9 +748,12 @@ $ui.ApplyTagsButton.Add_Click({
                 Status   = $status
                 Detail   = $detail
             })
+            $ui.ApplyResultsGrid.ItemsSource = @($results)
+            [System.Windows.Forms.Application]::DoEvents()
         }
 
         $ui.ApplyResultsGrid.ItemsSource = @($results)
+        [System.Windows.Forms.Application]::DoEvents()
 
         $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
         $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
@@ -758,6 +761,7 @@ $ui.ApplyTagsButton.Add_Click({
 
         $ui.ApplyTagsButton.IsEnabled = $true
         Update-Status "$modeLabel tagging complete - $total targets processed" 100
+        [System.Windows.Forms.Application]::DoEvents()
     }
     catch {
         $ui.ApplyTagsButton.IsEnabled = $true
@@ -903,9 +907,12 @@ $ui.RemoveTagsButton.Add_Click({
                 PreviousValue = $target.CurrentValue
                 Detail        = $detail
             })
+            $ui.RemoveResultsGrid.ItemsSource = @($results)
+            [System.Windows.Forms.Application]::DoEvents()
         }
 
         $ui.RemoveResultsGrid.ItemsSource = @($results)
+        [System.Windows.Forms.Application]::DoEvents()
 
         $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
         $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
@@ -913,6 +920,7 @@ $ui.RemoveTagsButton.Add_Click({
 
         $ui.RemoveTagsButton.IsEnabled = $true
         Update-Status "$modeLabel removal complete - $total targets processed" 100
+        [System.Windows.Forms.Application]::DoEvents()
     }
     catch {
         $ui.RemoveTagsButton.IsEnabled = $true
