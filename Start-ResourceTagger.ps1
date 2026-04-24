@@ -383,13 +383,13 @@ $ui.ScanButton.Add_Click({
             [PSCustomObject]@{
                 TagKey     = $_.Key
                 RGsCovered = $_.Value
-                TotalRGs   = $allRGs.Count
-                Coverage   = if ($allRGs.Count) { '{0:P0}' -f ($_.Value / $allRGs.Count) } else { '0%' }
+                TotalRGs   = @($allRGs).Count
+                Coverage   = if (@($allRGs).Count) { '{0:P0}' -f ($_.Value / @($allRGs).Count) } else { '0%' }
             }
         }
 
         # --- Coverage pct ---
-        $coveragePct = if ($allResources.Count) { [math]::Round(($taggedRes / $allResources.Count) * 100, 1) } else { 0 }
+        $coveragePct = if (@($allResources).Count) { [math]::Round(($taggedRes / @($allResources).Count) * 100, 1) } else { 0 }
 
         # --- Unique tag keys ---
         $uniqueTags = $tagKeyCount.Keys.Count
@@ -400,8 +400,8 @@ $ui.ScanButton.Add_Click({
         $ui.ResourceGrid.ItemsSource   = @($resSorted)
 
         # --- Summary cards ---
-        $ui.RGCountText.Text       = $allRGs.Count.ToString()
-        $ui.ResourceCountText.Text = $allResources.Count.ToString()
+        $ui.RGCountText.Text       = @($allRGs).Count.ToString()
+        $ui.ResourceCountText.Text = @($allResources).Count.ToString()
         $ui.TagCoverageText.Text   = "$coveragePct%"
         $ui.UntaggedRGText.Text    = $untaggedRGs.ToString()
         $ui.UniqueTagsText.Text    = $uniqueTags.ToString()
@@ -410,7 +410,7 @@ $ui.ScanButton.Add_Click({
         $ui.ApplyTagsButton.IsEnabled = $true
         $ui.ScanButton.IsEnabled    = $true
 
-        Update-Status "Scan complete - $($allRGs.Count) RGs, $($allResources.Count) resources" 100
+        Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
     }
     catch {
         $ui.ScanButton.IsEnabled = $true
@@ -425,7 +425,7 @@ $ui.ScanButton.Add_Click({
 # RG FILTER change
 # ─────────────────────────────────────────────────────────────────
 $ui.RGFilterTag.Add_SelectionChanged({
-    if (-not $script:AllRGs -or $script:AllRGs.Count -eq 0) { return }
+    if (-not $script:AllRGs -or @($script:AllRGs).Count -eq 0) { return }
 
     $requiredTags = @()
     $rtText = $ui.RequiredTagsInput.Text.Trim()
@@ -446,7 +446,7 @@ $ui.RGFilterTag.Add_SelectionChanged({
 $ui.ResFilterTag.Add_SelectionChanged({
     $ui.ResFilterTagName.IsEnabled = ($ui.ResFilterTag.SelectedIndex -eq 2)
 
-    if (-not $script:AllResources -or $script:AllResources.Count -eq 0) { return }
+    if (-not $script:AllResources -or @($script:AllResources).Count -eq 0) { return }
 
     switch ($ui.ResFilterTag.SelectedIndex) {
         1 { # Untagged
@@ -567,7 +567,7 @@ $ui.ApplyTagsButton.Add_Click({
             }
         }
 
-        $total = $targets.Count
+        $total = @($targets).Count
         $done  = 0
 
         foreach ($target in $targets) {
@@ -606,10 +606,10 @@ $ui.ApplyTagsButton.Add_Click({
                         }
                     }
 
-                    if ($applied.Count -gt 0) {
+                    if (@($applied).Count -gt 0) {
                         Update-AzTag -ResourceId $target.Id -Tag $merged -Operation Merge -ErrorAction Stop | Out-Null
                         $detail = "Applied: $($applied -join ', ')"
-                        if ($skipped.Count -gt 0) { $detail += " | Skipped (exists): $($skipped -join ', ')" }
+                        if (@($skipped).Count -gt 0) { $detail += " | Skipped (exists): $($skipped -join ', ')" }
                     } else {
                         $status = 'Skipped'
                         $detail = "All tags already exist"
@@ -631,8 +631,8 @@ $ui.ApplyTagsButton.Add_Click({
 
         $ui.ApplyResultsGrid.ItemsSource = @($results)
 
-        $successCount = ($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
-        $errorCount   = ($results | Where-Object { $_.Status -eq 'Error' }).Count
+        $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
+        $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
         $ui.ApplyStatusText.Text = "$modeLabel complete - $successCount succeeded, $errorCount failed out of $total"
 
         $ui.ApplyTagsButton.IsEnabled = $true
@@ -682,7 +682,7 @@ $ui.ExportButton.Add_Click({
                 })
             }
             $export | Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
-            Update-Status "Exported $($export.Count) rows to $($dlg.FileName)" 100
+            Update-Status "Exported $(@($export).Count) rows to $($dlg.FileName)" 100
         }
         catch {
             [System.Windows.MessageBox]::Show("Export failed: $($_.Exception.Message)", 'Error', 'OK', 'Error') | Out-Null
