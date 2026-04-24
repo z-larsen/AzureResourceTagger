@@ -1,0 +1,21 @@
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# PowerShell
+*.psm1.bak
+*.ps1.bak
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Exports (user-generated CSV files)
+*.csv
