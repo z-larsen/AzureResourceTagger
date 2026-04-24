@@ -313,8 +313,8 @@ $ui.ScanButton.Add_Click({
 
         # --- Resources ---
         if ($rgFilter) {
-            $safeRGFilter = $rgFilter -replace "['\\\"]", ''
-            $resQuery = "resources | where resourceGroup =~ '$safeRGFilter' | project name, type, resourceGroup, location, tags, subscriptionId, id"
+            $safeRGFilter = $rgFilter -replace "[`'`"]", ''
+            $resQuery = "resources | where resourceGroup =~ `'$safeRGFilter`' | project name, type, resourceGroup, location, tags, subscriptionId, id"
         } else {
             $resQuery = "resources | project name, type, resourceGroup, location, tags, subscriptionId, id"
         }
@@ -525,9 +525,9 @@ $ui.ApplyTagsButton.Add_Click({
     $modeLabel = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
 
     if (-not $isDryRun) {
+        $msg = "You are about to apply $($tagsToApply.Count) tag(s) to resources in $($sub.Name)." + "`n`nThis is a LIVE operation. Continue?"
         $confirm = [System.Windows.MessageBox]::Show(
-            "You are about to apply $($tagsToApply.Count) tag(s) to resources in '$($sub.Name)'.`n`nThis is a LIVE operation. Continue?",
-            'Confirm Tag Application', 'YesNo', 'Warning')
+            $msg, 'Confirm Tag Application', 'YesNo', 'Warning')
         if ($confirm -ne 'Yes') { return }
     }
 
