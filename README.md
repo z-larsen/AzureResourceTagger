@@ -23,9 +23,7 @@ already deployed. When you flip a "require tag" policy from audit to deny,
 every resource group that doesn't already have the tag starts failing
 deployments.
 
-The Azure Resource Tagger scans what exists, determines what's missing
-what's missing, bulk-apply the right tags, then turn on enforcement knowing
-nothing will break.
+The Azure Resource Tagger scans what exists, determines what's missing and bulk applies your desired tags.
 
 ---
 
