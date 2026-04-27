@@ -282,6 +282,10 @@
             <!-- TAB 3: Resources -->
             <TabItem Header="  Resources  " FontSize="13">
                 <DockPanel Margin="20">
+                    <TextBlock DockPanel.Dock="Top" FontSize="15" FontWeight="SemiBold" Foreground="#333" Margin="0,0,0,4"
+                               Text="Tag Individual Resources"/>
+                    <TextBlock DockPanel.Dock="Top" FontSize="12" Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,10"
+                               Text="Use the Filter dropdown to narrow the list (all, untagged, or missing a specific tag). When 'Missing Specific Tag' is selected, enter the tag name in the Tag Name box. Select one or more resources in the grid below, then click Apply Tag to set a tag key and value on the selected resources."/>
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
                         <TextBlock Text="Filter:" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <ComboBox x:Name="ResFilterTag" Width="200" FontSize="13" Margin="0,0,8,0">
@@ -310,7 +314,9 @@
                         <!-- Tag Definition -->
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
-                                <TextBlock Text="Define Tags to Apply" FontSize="16" FontWeight="SemiBold" Foreground="#333" Margin="0,0,0,12"/>
+                                <TextBlock Text="Define Tags to Apply" FontSize="16" FontWeight="SemiBold" Foreground="#333" Margin="0,0,0,4"/>
+                                <TextBlock FontSize="12" Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,12"
+                                           Text="Add one or more tags to the queue, choose a target scope, then click Apply Tags. Use Dry Run (enabled by default) to preview changes before committing. The Overwrite checkbox controls whether existing tag values are replaced."/>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
