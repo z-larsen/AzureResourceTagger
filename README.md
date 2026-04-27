@@ -45,8 +45,25 @@ The Azure Resource Tagger scans what exists, determines what's missing and bulk 
 ## Quick Start
 
 ```powershell
+# If downloaded from GitHub, unblock the files first:
+Get-ChildItem -Path .\AzureResourceTagger -Recurse | Unblock-File
+
+# Set execution policy if needed (current user only):
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+cd AzureResourceTagger
 .\Start-ResourceTagger.ps1
 ```
+
+**Alternative -- run with bypass (no policy change required):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Start-ResourceTagger.ps1
+```
+
+> **"Not digitally signed" error?** Windows marks downloaded files as blocked. Run
+> `Unblock-File` on the extracted folder, or use the `-ExecutionPolicy Bypass`
+> command above, or right-click the `.ps1` file → Properties → check **Unblock**.
 
 1. Click **Commercial Tenant** or **Gov Tenant** to authenticate
 2. Select a subscription (and optionally a specific resource group)
