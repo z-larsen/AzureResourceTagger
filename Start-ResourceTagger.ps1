@@ -441,6 +441,12 @@ $ui.ScanButton.Add_Click({
         $ui.ApplyTagsButton.IsEnabled = $false
         $ui.ExportButton.IsEnabled = $false
 
+        # Disable scope controls during scan to prevent Flush-UI from
+        # triggering cascading SelectionChanged handlers
+        $ui.SubscriptionSelector.IsEnabled = $false
+        $ui.ScopeLevel.IsEnabled = $false
+        $ui.RGSelector.IsEnabled = $false
+
         # Clear previous results so WPF isn't rendering stale data during scan
         $ui.TagSummaryGrid.ItemsSource = $null
         $ui.RGGrid.ItemsSource         = $null
@@ -579,6 +585,9 @@ $ui.ScanButton.Add_Click({
         $ui.ExportButton.IsEnabled  = $true
         $ui.ApplyTagsButton.IsEnabled = $true
         $ui.ScanButton.IsEnabled    = $true
+        $ui.SubscriptionSelector.IsEnabled = $true
+        $ui.ScopeLevel.IsEnabled    = $true
+        $ui.RGSelector.IsEnabled    = ($ui.ScopeLevel.SelectedIndex -eq 1)
         Flush-UI
 
         # Auto-populate Remove Tags dropdown
@@ -622,6 +631,9 @@ $ui.ScanButton.Add_Click({
     }
     catch {
         $ui.ScanButton.IsEnabled = $true
+        $ui.SubscriptionSelector.IsEnabled = $true
+        $ui.ScopeLevel.IsEnabled = $true
+        $ui.RGSelector.IsEnabled = ($ui.ScopeLevel.SelectedIndex -eq 1)
         Update-Status "Scan error: $($_.Exception.Message)" 0
         [System.Windows.MessageBox]::Show(
             "Scan failed:`n$($_.Exception.Message)",
