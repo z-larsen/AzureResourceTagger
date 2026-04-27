@@ -118,13 +118,11 @@ $ui.RequiredTagsInput.Add_LostFocus({
 })
 
 # ─────────────────────────────────────────────────────────────────
-# Helper: Flush WPF dispatcher (render pending UI updates)
+# Helper: Flush WPF dispatcher (process pending UI updates)
 # ─────────────────────────────────────────────────────────────────
+Add-Type -AssemblyName System.Windows.Forms
 function Flush-UI {
-    $window.Dispatcher.Invoke(
-        [Action]{ },
-        [System.Windows.Threading.DispatcherPriority]::Render
-    )
+    [System.Windows.Forms.Application]::DoEvents()
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -183,7 +181,9 @@ function Search-AzGraphSafe {
         }
         if ($skip) { $params['SkipToken'] = $skip }
 
+        Flush-UI
         $result = Search-AzGraph @params
+        Flush-UI
 
         # Newer Az.ResourceGraph returns PSResourceGraphResponse with .Data
         # Older versions return the array of rows directly
@@ -394,11 +394,14 @@ $ui.SubscriptionSelector.Add_SelectionChanged({
     if ($idx -lt 0) { return }
     $sub = $script:Subscriptions[$idx]
     Set-AzContext -SubscriptionId $sub.Id -ErrorAction SilentlyContinue | Out-Null
+    Flush-UI
 
     $ui.RGSelector.Items.Clear()
     $ui.RGSelector.Items.Add('(All Resource Groups)') | Out-Null
     try {
+        Flush-UI
         $rgs = Get-AzResourceGroup | Sort-Object ResourceGroupName
+        Flush-UI
         foreach ($rg in $rgs) {
             $ui.RGSelector.Items.Add($rg.ResourceGroupName) | Out-Null
         }
@@ -790,7 +793,9 @@ $ui.ResTagSelectedButton.Add_Click({
             Update-Status "Tagging $($resObj.Name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
 
             $resId = $resObj.ResourceId
+            Flush-UI
             $resource = Get-AzTag -ResourceId $resId -ErrorAction Stop
+            Flush-UI
             $existing = @{}
             if ($resource.Properties -and $resource.Properties.TagsProperty) {
                 foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
@@ -802,7 +807,9 @@ $ui.ResTagSelectedButton.Add_Click({
                 $skipCount++
             } else {
                 $tagHash = @{ $tagName = $tagValue }
+                Flush-UI
                 Update-AzTag -ResourceId $resId -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
+                Flush-UI
                 $successCount++
             }
         } catch {
@@ -952,7 +959,9 @@ $ui.ApplyTagsButton.Add_Click({
                         $status = 'DryRun'
                         $detail = ($tagsToApply.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
                     } else {
+                        Flush-UI
                         $resource = Get-AzTag -ResourceId $rgObj.id -ErrorAction Stop
+                        Flush-UI
                         $existing = @{}
                         if ($resource.Properties -and $resource.Properties.TagsProperty) {
                             foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
@@ -975,7 +984,9 @@ $ui.ApplyTagsButton.Add_Click({
                         }
 
                         if (@($applied).Count -gt 0) {
+                            Flush-UI
                             Update-AzTag -ResourceId $rgObj.id -Tag $merged -Operation Merge -ErrorAction Stop | Out-Null
+                            Flush-UI
                             $detail = "Applied: $($applied -join ', ')"
                             if (@($skipped).Count -gt 0) { $detail += " | Skipped (exists): $($skipped -join ', ')" }
                         } else {
@@ -1096,7 +1107,9 @@ $ui.ApplyTagsButton.Add_Click({
                     $detail = ($tagsToApply.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
                 } else {
                     # Get current tags
+                    Flush-UI
                     $resource  = Get-AzTag -ResourceId $target.Id -ErrorAction Stop
+                    Flush-UI
                     $existing  = @{}
                     if ($resource.Properties -and $resource.Properties.TagsProperty) {
                         foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
@@ -1119,7 +1132,9 @@ $ui.ApplyTagsButton.Add_Click({
                     }
 
                     if (@($applied).Count -gt 0) {
+                        Flush-UI
                         Update-AzTag -ResourceId $target.Id -Tag $merged -Operation Merge -ErrorAction Stop | Out-Null
+                        Flush-UI
                         $detail = "Applied: $($applied -join ', ')"
                         if (@($skipped).Count -gt 0) { $detail += " | Skipped (exists): $($skipped -join ', ')" }
                     } else {
@@ -1195,7 +1210,9 @@ $ui.RefreshTagListButton.Add_Click({
     }
     # Also pull from ARM tags API (catches resources ARG doesn't index)
     try {
+        Flush-UI
         $armTags = Get-AzTag -ErrorAction SilentlyContinue
+        Flush-UI
         foreach ($t in $armTags) {
             if ($t.PSObject.Properties.Match('TagName').Count -gt 0 -and $t.TagName) { $tagKeys[$t.TagName] = $true }
         }
@@ -1293,7 +1310,9 @@ $ui.RemoveTagsButton.Add_Click({
                     $detail = "Would remove $tagToRemove=$($target.CurrentValue)"
                 } else {
                     $tagToDelete = @{ $tagToRemove = $target.CurrentValue }
+                    Flush-UI
                     Update-AzTag -ResourceId $target.Id -Tag $tagToDelete -Operation Delete -ErrorAction Stop | Out-Null
+                    Flush-UI
                     $detail = "Removed $tagToRemove=$($target.CurrentValue)"
                 }
             }
