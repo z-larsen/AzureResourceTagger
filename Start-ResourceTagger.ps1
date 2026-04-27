@@ -70,6 +70,7 @@ $controlNames = @(
     'TagSummaryGrid',
     'RGFilterTag','RequiredTagsInput','RequiredTagsPlaceholder','RGGrid',
     'ResFilterTag','ResFilterTagName','ResourceGrid',
+    'ResTagSelectedButton','ResOverwriteCheck','ResTagStatusText',
     'ApplyTagName','ApplyTagValue','AddTagButton',
     'TagQueueGrid','ClearTagsButton','RemoveTagButton',
     'ApplyScope','OverwriteCheck','DryRunCheck',
@@ -624,6 +625,114 @@ $ui.ClearTagsButton.Add_Click({
 $ui.RemoveTagButton.Add_Click({
     $sel = $ui.TagQueueGrid.SelectedItem
     if ($sel) { $script:TagQueue.Remove($sel) }
+})
+
+# ─────────────────────────────────────────────────────────────────
+# RESOURCES TAB - Enable/disable Tag Selected button on selection
+# ─────────────────────────────────────────────────────────────────
+$ui.ResourceGrid.Add_SelectionChanged({
+    $ui.ResTagSelectedButton.IsEnabled = ($ui.ResourceGrid.SelectedItems.Count -gt 0)
+    $ui.ResTagStatusText.Text = "$($ui.ResourceGrid.SelectedItems.Count) selected"
+})
+
+# ─────────────────────────────────────────────────────────────────
+# RESOURCES TAB - Apply tag to selected resources inline
+# ─────────────────────────────────────────────────────────────────
+$ui.ResTagSelectedButton.Add_Click({
+    $selected = @($ui.ResourceGrid.SelectedItems)
+    if ($selected.Count -eq 0) { return }
+
+    # Pop a small dialog asking for tag name and value
+    $tagDlgXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Apply Tag" Width="400" Height="220"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Background="#F0F0F0" FontFamily="Segoe UI">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="80"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Tag Name:" FontSize="13" VerticalAlignment="Center" Margin="0,0,0,8"/>
+        <TextBox Grid.Row="0" Grid.Column="1" Name="TagNameBox" FontSize="13" Padding="4" Margin="0,0,0,8"/>
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Tag Value:" FontSize="13" VerticalAlignment="Center" Margin="0,0,0,8"/>
+        <TextBox Grid.Row="1" Grid.Column="1" Name="TagValueBox" FontSize="13" Padding="4" Margin="0,0,0,8"/>
+        <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Name="InfoLabel" FontSize="12" Foreground="#666"
+                   Margin="0,0,0,4"/>
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="ApplyBtn" Content="Apply" Width="90" Height="32" FontSize="13" FontWeight="SemiBold"
+                    Background="#107C10" Foreground="White" BorderThickness="0" Margin="0,0,8,0"/>
+            <Button Name="CancelBtn" Content="Cancel" Width="90" Height="32" FontSize="13"
+                    Background="White" Foreground="#333" BorderBrush="#CCC" BorderThickness="1"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+
+    $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($tagDlgXaml))
+    $tagDlg = [System.Windows.Markup.XamlReader]::Load($rdr)
+
+    $tagNameBox  = $tagDlg.FindName('TagNameBox')
+    $tagValueBox = $tagDlg.FindName('TagValueBox')
+    $infoLabel   = $tagDlg.FindName('InfoLabel')
+    $applyBtn    = $tagDlg.FindName('ApplyBtn')
+    $cancelDlgBtn = $tagDlg.FindName('CancelBtn')
+
+    $infoLabel.Text = "Applying to $($selected.Count) resource(s)"
+
+    $applyBtn.Add_Click({ $tagDlg.DialogResult = $true; $tagDlg.Close() }.GetNewClosure())
+    $cancelDlgBtn.Add_Click({ $tagDlg.DialogResult = $false; $tagDlg.Close() }.GetNewClosure())
+
+    $result = $tagDlg.ShowDialog()
+    if (-not $result) { return }
+
+    $tagName  = $tagNameBox.Text.Trim()
+    $tagValue = $tagValueBox.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($tagName)) {
+        [System.Windows.MessageBox]::Show('Tag name cannot be empty.', 'Validation', 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    $overwrite = $ui.ResOverwriteCheck.IsChecked
+    $successCount = 0
+    $skipCount    = 0
+    $errorCount   = 0
+    $total        = $selected.Count
+
+    foreach ($resObj in $selected) {
+        try {
+            Update-Status "Tagging $($resObj.name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
+
+            $resource = Get-AzTag -ResourceId $resObj.id -ErrorAction Stop
+            $existing = @{}
+            if ($resource.Properties -and $resource.Properties.TagsProperty) {
+                foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
+                    $existing[$kv.Key] = $kv.Value
+                }
+            }
+
+            if ($existing.ContainsKey($tagName) -and -not $overwrite) {
+                $skipCount++
+            } else {
+                $tagHash = @{ $tagName = $tagValue }
+                Update-AzTag -ResourceId $resObj.id -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
+                $successCount++
+            }
+            [System.Windows.Forms.Application]::DoEvents()
+        } catch {
+            $errorCount++
+        }
+    }
+
+    $ui.ResTagStatusText.Text = "Done: $successCount applied, $skipCount skipped, $errorCount errors"
+    Update-Status "Tag applied to $successCount resources" 100
 })
 
 # ─────────────────────────────────────────────────────────────────
