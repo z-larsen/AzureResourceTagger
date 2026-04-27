@@ -9,8 +9,8 @@
     preparing a subscription for Azure Policy tag enforcement.
 
 .NOTES
-    Version : 1.0.0
-    Author  : Zach Larsen
+    Version : 1.2.0
+    Author  : Zac Larsen
     Requires: Az.Accounts, Az.Resources, Az.ResourceGraph
 #>
 
