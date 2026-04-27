@@ -97,6 +97,9 @@ $script:Environment     = ''
 $script:Subscriptions   = @()
 $script:AllRGs          = @()
 $script:AllResources    = @()
+$script:LastScanSubIdx  = -1
+$script:LastScanScope   = -1
+$script:LastScanRG      = ''
 $script:TagQueue        = [System.Collections.ObjectModel.ObservableCollection[PSObject]]::new()
 $ui.TagQueueGrid.ItemsSource = $script:TagQueue
 
@@ -539,6 +542,11 @@ $ui.ScanButton.Add_Click({
         $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
 
         Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
+
+        # Record scan scope for stale-data detection
+        $script:LastScanSubIdx = $ui.SubscriptionSelector.SelectedIndex
+        $script:LastScanScope  = $ui.ScopeLevel.SelectedIndex
+        $script:LastScanRG     = if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -gt 0) { $ui.RGSelector.SelectedItem.ToString() } else { '' }
     }
     catch {
         $ui.ScanButton.IsEnabled = $true
@@ -754,6 +762,18 @@ $ui.ApplyTagsButton.Add_Click({
     $subIdx    = $ui.SubscriptionSelector.SelectedIndex
     if ($subIdx -lt 0) { return }
     $sub = $script:Subscriptions[$subIdx]
+
+    # Warn if scope has changed since last scan
+    $currentRG = if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -gt 0) { $ui.RGSelector.SelectedItem.ToString() } else { '' }
+    $scopeChanged = ($subIdx -ne $script:LastScanSubIdx) -or
+                    ($ui.ScopeLevel.SelectedIndex -ne $script:LastScanScope) -or
+                    ($currentRG -ne $script:LastScanRG)
+    if ($scopeChanged -and $script:LastScanSubIdx -ge 0) {
+        $warn = [System.Windows.MessageBox]::Show(
+            "The scope has changed since the last scan. The tags will be applied based on the previous scan data.`n`nRe-scan first to pick up the new scope, or click Yes to continue with the existing scan data.",
+            'Scope Changed', 'YesNo', 'Warning')
+        if ($warn -ne 'Yes') { return }
+    }
 
     # ── Selected Resource Groups picker mode ────────────────
     if ($scopeIdx -eq 4) {
