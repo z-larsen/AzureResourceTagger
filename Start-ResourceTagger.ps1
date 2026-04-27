@@ -118,13 +118,21 @@ $ui.RequiredTagsInput.Add_LostFocus({
 })
 
 # ─────────────────────────────────────────────────────────────────
-# Helper: Flush WPF dispatcher (replaces WinForms DoEvents)
+# Helper: Flush WPF dispatcher (process pending UI messages)
 # ─────────────────────────────────────────────────────────────────
+$script:FlushingUI = $false
 function Flush-UI {
-    $window.Dispatcher.Invoke(
-        [System.Windows.Threading.DispatcherPriority]::Background,
-        [Action]{ }
-    )
+    if ($script:FlushingUI) { return }   # prevent reentrancy
+    $script:FlushingUI = $true
+    try {
+        $frame = [System.Windows.Threading.DispatcherFrame]::new()
+        $window.Dispatcher.BeginInvoke(
+            [System.Windows.Threading.DispatcherPriority]::Background,
+            [Action]{ $frame.Continue = $false }
+        )
+        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+    } catch {}
+    $script:FlushingUI = $false
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -187,24 +195,24 @@ function Search-AzGraphSafe {
         $result = Search-AzGraph @params
         Flush-UI
 
-        # Handle both old (direct array) and new (PSResourceGraphResponse) return types
-        $rows = $null
-        if ($result.PSObject.Properties.Match('Data').Count -gt 0 -and $result.Data) {
-            $rows = $result.Data
-        } elseif ($result -is [System.Collections.IEnumerable] -and $result -isnot [string]) {
-            $rows = $result
+        # Normalize: newer Az.ResourceGraph wraps results in .Data; older returns array directly
+        $rows = @()
+        try {
+            if ($null -ne $result.Data) {
+                $rows = @($result.Data)
+            }
+        } catch {
+            # .Data doesn't exist — $result is the data itself
+            $rows = @($result)
         }
 
-        if ($rows) {
-            foreach ($r in $rows) {
-                # Only add objects that look like resource data (have a name or id property)
-                if ($r.PSObject.Properties.Match('name').Count -gt 0 -or $r.PSObject.Properties.Match('id').Count -gt 0) {
-                    $all.Add($r)
-                }
+        foreach ($r in $rows) {
+            if ($null -ne $r -and $r -is [PSCustomObject]) {
+                $all.Add($r)
             }
         }
 
-        $skip = if ($result.PSObject.Properties.Match('SkipToken').Count -gt 0) { $result.SkipToken } else { $null }
+        try { $skip = $result.SkipToken } catch { $skip = $null }
     } while ($skip)
 
     return $all
@@ -492,6 +500,7 @@ $ui.ScanButton.Add_Click({
         $untaggedRGs = 0
 
         foreach ($rg in $allRGs) {
+            if ($rg.PSObject.Properties.Match('name').Count -eq 0) { continue }
             $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
 
             $missingKeys = @()
@@ -519,6 +528,7 @@ $ui.ScanButton.Add_Click({
         $resSorted = [System.Collections.Generic.List[PSObject]]::new()
         $taggedRes = 0
         foreach ($res in $allResources) {
+            if ($res.PSObject.Properties.Match('name').Count -eq 0) { continue }
             $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
             if ($tagMap.Count -gt 0) { $taggedRes++ }
 
