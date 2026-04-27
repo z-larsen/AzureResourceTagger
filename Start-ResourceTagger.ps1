@@ -118,21 +118,13 @@ $ui.RequiredTagsInput.Add_LostFocus({
 })
 
 # ─────────────────────────────────────────────────────────────────
-# Helper: Flush WPF dispatcher (process pending UI messages)
+# Helper: Flush WPF dispatcher (render pending UI updates)
 # ─────────────────────────────────────────────────────────────────
-$script:FlushingUI = $false
 function Flush-UI {
-    if ($script:FlushingUI) { return }   # prevent reentrancy
-    $script:FlushingUI = $true
-    try {
-        $frame = [System.Windows.Threading.DispatcherFrame]::new()
-        $window.Dispatcher.BeginInvoke(
-            [System.Windows.Threading.DispatcherPriority]::Background,
-            [Action]{ $frame.Continue = $false }
-        )
-        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
-    } catch {}
-    $script:FlushingUI = $false
+    $window.Dispatcher.Invoke(
+        [Action]{ },
+        [System.Windows.Threading.DispatcherPriority]::Render
+    )
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -191,9 +183,7 @@ function Search-AzGraphSafe {
         }
         if ($skip) { $params['SkipToken'] = $skip }
 
-        Flush-UI
         $result = Search-AzGraph @params
-        Flush-UI
 
         # Newer Az.ResourceGraph returns PSResourceGraphResponse with .Data
         # Older versions return the array of rows directly
@@ -404,14 +394,11 @@ $ui.SubscriptionSelector.Add_SelectionChanged({
     if ($idx -lt 0) { return }
     $sub = $script:Subscriptions[$idx]
     Set-AzContext -SubscriptionId $sub.Id -ErrorAction SilentlyContinue | Out-Null
-    Flush-UI
 
     $ui.RGSelector.Items.Clear()
     $ui.RGSelector.Items.Add('(All Resource Groups)') | Out-Null
     try {
-        Flush-UI
         $rgs = Get-AzResourceGroup | Sort-Object ResourceGroupName
-        Flush-UI
         foreach ($rg in $rgs) {
             $ui.RGSelector.Items.Add($rg.ResourceGroupName) | Out-Null
         }
@@ -605,11 +592,11 @@ $ui.ScanButton.Add_Click({
         }
         # Also pull from ARM tags API (catches resources ARG doesn't index)
         try {
-            Flush-UI
             $armTags = Get-AzTag -ErrorAction SilentlyContinue
-            Flush-UI
             foreach ($t in $armTags) {
-                if ($t.TagName) { $removeTagKeys[$t.TagName] = $true }
+                if ($t.PSObject.Properties.Match('TagName').Count -gt 0 -and $t.TagName) {
+                    $removeTagKeys[$t.TagName] = $true
+                }
             }
         } catch {}
         foreach ($k in ($removeTagKeys.Keys | Sort-Object)) {
@@ -619,7 +606,6 @@ $ui.ScanButton.Add_Click({
             $ui.RemoveTagSelector.SelectedIndex = 0
         }
         $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
-        Flush-UI
 
         Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
         Flush-UI
@@ -802,12 +788,9 @@ $ui.ResTagSelectedButton.Add_Click({
     foreach ($resObj in $selected) {
         try {
             Update-Status "Tagging $($resObj.Name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
-            Flush-UI
 
             $resId = $resObj.ResourceId
-            Flush-UI
             $resource = Get-AzTag -ResourceId $resId -ErrorAction Stop
-            Flush-UI
             $existing = @{}
             if ($resource.Properties -and $resource.Properties.TagsProperty) {
                 foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
@@ -820,10 +803,8 @@ $ui.ResTagSelectedButton.Add_Click({
             } else {
                 $tagHash = @{ $tagName = $tagValue }
                 Update-AzTag -ResourceId $resId -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
-                Flush-UI
                 $successCount++
             }
-            Flush-UI
         } catch {
             $errorCount++
             $lastErr = $_.Exception.Message
