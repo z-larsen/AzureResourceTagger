@@ -710,9 +710,12 @@ $ui.ResTagSelectedButton.Add_Click({
     foreach ($resObj in $selected) {
         try {
             Update-Status "Tagging $($resObj.Name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
+            [System.Windows.Forms.Application]::DoEvents()
 
             $resId = $resObj.ResourceId
+            [System.Windows.Forms.Application]::DoEvents()
             $resource = Get-AzTag -ResourceId $resId -ErrorAction Stop
+            [System.Windows.Forms.Application]::DoEvents()
             $existing = @{}
             if ($resource.Properties -and $resource.Properties.TagsProperty) {
                 foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
@@ -725,6 +728,7 @@ $ui.ResTagSelectedButton.Add_Click({
             } else {
                 $tagHash = @{ $tagName = $tagValue }
                 Update-AzTag -ResourceId $resId -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
+                [System.Windows.Forms.Application]::DoEvents()
                 $successCount++
             }
             [System.Windows.Forms.Application]::DoEvents()
