@@ -195,24 +195,24 @@ function Search-AzGraphSafe {
         $result = Search-AzGraph @params
         Flush-UI
 
-        # Normalize: newer Az.ResourceGraph wraps results in .Data; older returns array directly
-        $rows = @()
-        try {
-            if ($null -ne $result.Data) {
-                $rows = @($result.Data)
+        # Newer Az.ResourceGraph returns PSResourceGraphResponse with .Data
+        # Older versions return the array of rows directly
+        $hasData = $result.PSObject.Properties.Match('Data').Count -gt 0
+        if ($hasData -and $null -ne $result.Data) {
+            foreach ($r in $result.Data) {
+                if ($null -ne $r) { $all.Add($r) }
             }
-        } catch {
-            # .Data doesn't exist — $result is the data itself
-            $rows = @($result)
+        } else {
+            # $result itself is the iterable set of rows
+            foreach ($r in $result) {
+                if ($null -ne $r -and $r.PSObject.Properties.Match('id').Count -gt 0) {
+                    $all.Add($r)
+                }
+            }
         }
 
-        foreach ($r in $rows) {
-            if ($null -ne $r -and $r -is [PSCustomObject]) {
-                $all.Add($r)
-            }
-        }
-
-        try { $skip = $result.SkipToken } catch { $skip = $null }
+        $hasSkip = $result.PSObject.Properties.Match('SkipToken').Count -gt 0
+        $skip = if ($hasSkip) { $result.SkipToken } else { $null }
     } while ($skip)
 
     return $all
@@ -461,12 +461,12 @@ $ui.ScanButton.Add_Click({
         }
 
         $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | project name, id, location, tags, subscriptionId"
+        if ($rgFilter) {
+            $safeRGName = $rgFilter -replace "[`'`"]", ''
+            $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | where name =~ '$safeRGName' | project name, id, location, tags, subscriptionId"
+        }
         $allRGs  = Search-AzGraphSafe -Query $rgQuery -Subscriptions @($subId)
         Flush-UI
-
-        if ($rgFilter) {
-            $allRGs = $allRGs | Where-Object { $_.name -eq $rgFilter }
-        }
 
         Update-Status 'Scanning resources...' 40
         Flush-UI
