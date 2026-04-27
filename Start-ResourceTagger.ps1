@@ -100,6 +100,7 @@ $script:AllResources    = @()
 $script:LastScanSubIdx  = -1
 $script:LastScanScope   = -1
 $script:LastScanRG      = ''
+$script:Scanning        = $false
 $script:TagQueue        = [System.Collections.ObjectModel.ObservableCollection[PSObject]]::new()
 $ui.TagQueueGrid.ItemsSource = $script:TagQueue
 
@@ -390,6 +391,7 @@ $ui.GovButton.Add_Click({
 # Subscription selection → populate RGs
 # ─────────────────────────────────────────────────────────────────
 $ui.SubscriptionSelector.Add_SelectionChanged({
+    if ($script:Scanning) { return }
     $idx = $ui.SubscriptionSelector.SelectedIndex
     if ($idx -lt 0) { return }
     $sub = $script:Subscriptions[$idx]
@@ -421,12 +423,14 @@ $ui.ScopeLevel.Add_SelectionChanged({
 # SCAN
 # ─────────────────────────────────────────────────────────────────
 $ui.ScanButton.Add_Click({
+    if ($script:Scanning) { return }
     $subIdx = $ui.SubscriptionSelector.SelectedIndex
     if ($subIdx -lt 0) { return }
     $sub = $script:Subscriptions[$subIdx]
     $subId = $sub.Id
 
     try {
+        $script:Scanning = $true
         $ui.ScanButton.IsEnabled = $false
         $ui.ApplyTagsButton.IsEnabled = $false
         $ui.ExportButton.IsEnabled = $false
@@ -572,14 +576,6 @@ $ui.ScanButton.Add_Click({
         $ui.UntaggedRGText.Text    = $untaggedRGs.ToString()
         $ui.UniqueTagsText.Text    = $uniqueTags.ToString()
 
-        $ui.ExportButton.IsEnabled  = $true
-        $ui.ApplyTagsButton.IsEnabled = $true
-        $ui.ScanButton.IsEnabled    = $true
-        $ui.SubscriptionSelector.IsEnabled = $true
-        $ui.ScopeLevel.IsEnabled    = $true
-        $ui.RGSelector.IsEnabled    = ($ui.ScopeLevel.SelectedIndex -eq 1)
-        Flush-UI
-
         # Auto-populate Remove Tags dropdown
         Update-Status 'Discovering tag keys...' 90
         Flush-UI
@@ -610,6 +606,13 @@ $ui.ScanButton.Add_Click({
         }
         $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
 
+        $ui.ExportButton.IsEnabled  = $true
+        $ui.ApplyTagsButton.IsEnabled = $true
+        $ui.ScanButton.IsEnabled    = $true
+        $ui.SubscriptionSelector.IsEnabled = $true
+        $ui.ScopeLevel.IsEnabled    = $true
+        $ui.RGSelector.IsEnabled    = ($ui.ScopeLevel.SelectedIndex -eq 1)
+
         Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
         Flush-UI
 
@@ -628,12 +631,16 @@ $ui.ScanButton.Add_Click({
             "Scan failed:`n$($_.Exception.Message)",
             'Scan Error', 'OK', 'Error') | Out-Null
     }
+    finally {
+        $script:Scanning = $false
+    }
 })
 
 # ─────────────────────────────────────────────────────────────────
 # RG FILTER change
 # ─────────────────────────────────────────────────────────────────
 $ui.RGFilterTag.Add_SelectionChanged({
+    if ($script:Scanning) { return }
     if (-not $script:AllRGs -or @($script:AllRGs).Count -eq 0) { return }
 
     $requiredTags = @()
