@@ -366,11 +366,14 @@ $ui.SubscriptionSelector.Add_SelectionChanged({
     if ($idx -lt 0) { return }
     $sub = $script:Subscriptions[$idx]
     Set-AzContext -SubscriptionId $sub.Id -ErrorAction SilentlyContinue | Out-Null
+    [System.Windows.Forms.Application]::DoEvents()
 
     $ui.RGSelector.Items.Clear()
     $ui.RGSelector.Items.Add('(All Resource Groups)') | Out-Null
     try {
+        [System.Windows.Forms.Application]::DoEvents()
         $rgs = Get-AzResourceGroup | Sort-Object ResourceGroupName
+        [System.Windows.Forms.Application]::DoEvents()
         foreach ($rg in $rgs) {
             $ui.RGSelector.Items.Add($rg.ResourceGroupName) | Out-Null
         }
@@ -398,6 +401,7 @@ $ui.ScanButton.Add_Click({
     try {
         Update-Status 'Scanning resource groups...' 10
         $ui.ScanButton.IsEnabled = $false
+        [System.Windows.Forms.Application]::DoEvents()
 
         # --- Resource Groups ---
         $rgFilter = $null
@@ -413,6 +417,7 @@ $ui.ScanButton.Add_Click({
         }
 
         Update-Status 'Scanning resources...' 40
+        [System.Windows.Forms.Application]::DoEvents()
 
         # --- Resources ---
         if ($rgFilter) {
@@ -427,6 +432,7 @@ $ui.ScanButton.Add_Click({
         $script:AllResources = $allResources
 
         Update-Status 'Building tag summary...' 70
+        [System.Windows.Forms.Application]::DoEvents()
 
         # --- Required tags ---
         $requiredTags = @()
@@ -499,6 +505,7 @@ $ui.ScanButton.Add_Click({
         $uniqueTags = $tagKeyCount.Keys.Count
 
         # --- Bind grids ---
+        [System.Windows.Forms.Application]::DoEvents()
         $ui.TagSummaryGrid.ItemsSource = @($tagSummary)
         $ui.RGGrid.ItemsSource         = @($rgSorted)
         $ui.ResourceGrid.ItemsSource   = @($resSorted)
