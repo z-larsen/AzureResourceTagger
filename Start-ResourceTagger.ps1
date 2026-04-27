@@ -155,6 +155,14 @@ function ConvertTo-TagHashtable {
     return $map
 }
 
+# Helper: Safely get the tags property from a Resource Graph object
+function Get-SafeTags {
+    param($Obj)
+    if ($null -eq $Obj) { return $null }
+    if ($Obj.PSObject.Properties.Match('tags').Count -gt 0) { return $Obj.tags }
+    return $null
+}
+
 # ─────────────────────────────────────────────────────────────────
 # Helper: Safe Resource Graph query with paging
 # ─────────────────────────────────────────────────────────────────
@@ -470,7 +478,7 @@ $ui.ScanButton.Add_Click({
         $untaggedRGs = 0
 
         foreach ($rg in $allRGs) {
-            $tagMap = ConvertTo-TagHashtable $rg.tags
+            $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
 
             $missingKeys = @()
             foreach ($rt in $requiredTags) {
@@ -497,7 +505,7 @@ $ui.ScanButton.Add_Click({
         $resSorted = [System.Collections.Generic.List[PSObject]]::new()
         $taggedRes = 0
         foreach ($res in $allResources) {
-            $tagMap = ConvertTo-TagHashtable $res.tags
+            $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
             if ($tagMap.Count -gt 0) { $taggedRes++ }
 
             $shortType = ($res.type -split '/')[-1]
@@ -555,11 +563,11 @@ $ui.ScanButton.Add_Click({
         $ui.RemoveTagSelector.Items.Clear()
         $removeTagKeys = @{}
         foreach ($rg in $script:AllRGs) {
-            $tagMap = ConvertTo-TagHashtable $rg.tags
+            $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
             foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
         }
         foreach ($res in $script:AllResources) {
-            $tagMap = ConvertTo-TagHashtable $res.tags
+            $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
             foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
         }
         # Also pull from ARM tags API (catches resources ARG doesn't index)
@@ -1033,7 +1041,7 @@ $ui.ApplyTagsButton.Add_Click({
             1 { # RGs missing the first queued tag
                 $firstTag = $script:TagQueue[0].TagName
                 foreach ($rg in $script:AllRGs) {
-                    $tagMap = ConvertTo-TagHashtable $rg.tags
+                    $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
                     if (-not $tagMap.ContainsKey($firstTag)) {
                         $targets += [PSCustomObject]@{ Id = $rg.id; Name = $rg.name; Kind = 'ResourceGroup' }
                     }
@@ -1046,7 +1054,7 @@ $ui.ApplyTagsButton.Add_Click({
             }
             3 { # Untagged resources
                 foreach ($res in $script:AllResources) {
-                    $tagMap = ConvertTo-TagHashtable $res.tags
+                    $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
                     if ($tagMap.Count -eq 0) {
                         $targets += [PSCustomObject]@{ Id = $res.id; Name = $res.name; Kind = ($res.type -split '/')[-1] }
                     }
@@ -1158,11 +1166,11 @@ $ui.RefreshTagListButton.Add_Click({
     $tagKeys = @{}
 
     foreach ($rg in $script:AllRGs) {
-        $tagMap = ConvertTo-TagHashtable $rg.tags
+        $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
         foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
     }
     foreach ($res in $script:AllResources) {
-        $tagMap = ConvertTo-TagHashtable $res.tags
+        $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
         foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
     }
     # Also pull from ARM tags API (catches resources ARG doesn't index)
@@ -1222,7 +1230,7 @@ $ui.RemoveTagsButton.Add_Click({
 
         if ($scopeIdx -eq 0 -or $scopeIdx -eq 2) {
             foreach ($rg in $script:AllRGs) {
-                $tagMap = ConvertTo-TagHashtable $rg.tags
+                $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
                 if ($tagMap.ContainsKey($tagToRemove)) {
                     if (-not $valueFilter -or $tagMap[$tagToRemove] -eq $valueFilter) {
                         $targets.Add([PSCustomObject]@{
@@ -1235,7 +1243,7 @@ $ui.RemoveTagsButton.Add_Click({
         }
         if ($scopeIdx -eq 1 -or $scopeIdx -eq 2) {
             foreach ($res in $script:AllResources) {
-                $tagMap = ConvertTo-TagHashtable $res.tags
+                $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
                 if ($tagMap.ContainsKey($tagToRemove)) {
                     if (-not $valueFilter -or $tagMap[$tagToRemove] -eq $valueFilter) {
                         $targets.Add([PSCustomObject]@{
@@ -1315,7 +1323,7 @@ $ui.ExportButton.Add_Click({
         try {
             $export = [System.Collections.Generic.List[PSObject]]::new()
             foreach ($rg in $script:AllRGs) {
-                $tagMap = ConvertTo-TagHashtable $rg.tags
+                $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
                 $export.Add([PSCustomObject]@{
                     Scope         = 'ResourceGroup'
                     Name          = $rg.name
@@ -1327,7 +1335,7 @@ $ui.ExportButton.Add_Click({
                 })
             }
             foreach ($res in $script:AllResources) {
-                $tagMap = ConvertTo-TagHashtable $res.tags
+                $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
                 $export.Add([PSCustomObject]@{
                     Scope         = 'Resource'
                     Name          = $res.name
