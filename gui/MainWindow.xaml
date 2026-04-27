@@ -292,7 +292,7 @@
                         <TextBlock Text="Tag Name:" FontSize="13" VerticalAlignment="Center" Margin="16,0,8,0" Foreground="#666"/>
                         <TextBox x:Name="ResFilterTagName" Width="200" FontSize="12" Padding="4" IsEnabled="False"/>
                         <Border Width="1" Background="#DDD" Margin="16,2,16,2" VerticalAlignment="Stretch"/>
-                        <Button x:Name="ResTagSelectedButton" Content="&#x1F3F7; Tag Selected" Style="{StaticResource AzureButton}"
+                        <Button x:Name="ResTagSelectedButton" Content="&#x1F3F7; Apply Tag" Style="{StaticResource AzureButton}"
                                 IsEnabled="False" Margin="0,0,8,0"/>
                         <CheckBox x:Name="ResOverwriteCheck" Content="Overwrite" FontSize="12" VerticalAlignment="Center"
                                   IsChecked="False" Margin="0,0,8,0"/>

@@ -475,6 +475,7 @@ $ui.ScanButton.Add_Click({
                 ResourceGroup = $res.resourceGroup
                 TagCount      = $tagMap.Count
                 Tags          = ($tagMap.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
+                ResourceId    = $res.id
             })
         }
 
@@ -708,9 +709,10 @@ $ui.ResTagSelectedButton.Add_Click({
 
     foreach ($resObj in $selected) {
         try {
-            Update-Status "Tagging $($resObj.name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
+            Update-Status "Tagging $($resObj.Name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
 
-            $resource = Get-AzTag -ResourceId $resObj.id -ErrorAction Stop
+            $resId = $resObj.ResourceId
+            $resource = Get-AzTag -ResourceId $resId -ErrorAction Stop
             $existing = @{}
             if ($resource.Properties -and $resource.Properties.TagsProperty) {
                 foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
@@ -722,16 +724,19 @@ $ui.ResTagSelectedButton.Add_Click({
                 $skipCount++
             } else {
                 $tagHash = @{ $tagName = $tagValue }
-                Update-AzTag -ResourceId $resObj.id -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
+                Update-AzTag -ResourceId $resId -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
                 $successCount++
             }
             [System.Windows.Forms.Application]::DoEvents()
         } catch {
             $errorCount++
+            $lastErr = $_.Exception.Message
         }
     }
 
-    $ui.ResTagStatusText.Text = "Done: $successCount applied, $skipCount skipped, $errorCount errors"
+    $statusMsg = "Done: $successCount applied, $skipCount skipped, $errorCount errors"
+    if ($errorCount -gt 0 -and $lastErr) { $statusMsg += " - $lastErr" }
+    $ui.ResTagStatusText.Text = $statusMsg
     Update-Status "Tag applied to $successCount resources" 100
 })
 
