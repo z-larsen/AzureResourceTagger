@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:ScriptRoot = $PSScriptRoot
-$script:Version    = '1.1.0'
+$script:Version    = '1.2.0'
 
 # ─────────────────────────────────────────────────────────────────
 # WPF bootstrap
@@ -518,6 +518,13 @@ $ui.ScanButton.Add_Click({
             $tagMap = ConvertTo-TagHashtable $res.tags
             foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
         }
+        # Also pull from ARM tags API (catches resources ARG doesn't index)
+        try {
+            $armTags = Get-AzTag -ErrorAction SilentlyContinue
+            foreach ($t in $armTags) {
+                if ($t.TagName) { $removeTagKeys[$t.TagName] = $true }
+            }
+        } catch {}
         foreach ($k in ($removeTagKeys.Keys | Sort-Object)) {
             $ui.RemoveTagSelector.Items.Add($k) | Out-Null
         }
@@ -620,17 +627,195 @@ $ui.RemoveTagButton.Add_Click({
 # APPLY TAGS
 # ─────────────────────────────────────────────────────────────────
 $ui.ApplyTagsButton.Add_Click({
-    if ($script:TagQueue.Count -eq 0) {
-        [System.Windows.MessageBox]::Show('Add at least one tag to the queue first.', 'No Tags', 'OK', 'Warning') | Out-Null
-        return
-    }
-
     $isDryRun  = $ui.DryRunCheck.IsChecked
     $overwrite = $ui.OverwriteCheck.IsChecked
     $scopeIdx  = $ui.ApplyScope.SelectedIndex
     $subIdx    = $ui.SubscriptionSelector.SelectedIndex
     if ($subIdx -lt 0) { return }
     $sub = $script:Subscriptions[$subIdx]
+
+    # ── Selected Resource Groups picker mode ────────────────
+    if ($scopeIdx -eq 4) {
+        if ($script:TagQueue.Count -eq 0) {
+            [System.Windows.MessageBox]::Show('Add at least one tag to the queue first.', 'No Tags', 'OK', 'Warning') | Out-Null
+            return
+        }
+        if (-not $script:AllRGs -or @($script:AllRGs).Count -eq 0) {
+            [System.Windows.MessageBox]::Show('Run a scan first so resource groups are available.', 'No Scan Data', 'OK', 'Warning') | Out-Null
+            return
+        }
+
+        # Build picker dialog
+        $pickerXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Select Resource Groups" Width="560" Height="520"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Background="#F0F0F0" FontFamily="Segoe UI">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="Select the resource groups to tag:" FontSize="14" FontWeight="SemiBold"
+                   Foreground="#333" Margin="0,0,0,8"/>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Name="SelectAllBtn" Content="Select All" Width="90" Height="28" FontSize="12"
+                    Background="White" Foreground="#0078D4" BorderBrush="#0078D4" BorderThickness="1" Margin="0,0,8,0"/>
+            <Button Name="SelectNoneBtn" Content="Select None" Width="90" Height="28" FontSize="12"
+                    Background="White" Foreground="#0078D4" BorderBrush="#0078D4" BorderThickness="1"/>
+        </StackPanel>
+        <ListBox Grid.Row="2" Name="RGList" FontSize="13" Margin="0,0,0,12"
+                 BorderBrush="#CCC" BorderThickness="1" SelectionMode="Extended"/>
+        <TextBlock Grid.Row="3" Name="CountLabel" Text="0 selected" FontSize="12" Foreground="#666" Margin="0,0,0,8"/>
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="OkBtn" Content="Apply" Width="90" Height="32" FontSize="13" FontWeight="SemiBold"
+                    Background="#107C10" Foreground="White" BorderThickness="0" Margin="0,0,8,0" IsEnabled="False"/>
+            <Button Name="CancelBtn" Content="Cancel" Width="90" Height="32" FontSize="13"
+                    Background="White" Foreground="#333" BorderBrush="#CCC" BorderThickness="1"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+
+        $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($pickerXaml))
+        $dlg = [System.Windows.Markup.XamlReader]::Load($rdr)
+
+        $rgList       = $dlg.FindName('RGList')
+        $okBtn        = $dlg.FindName('OkBtn')
+        $cancelBtn    = $dlg.FindName('CancelBtn')
+        $selectAllBtn = $dlg.FindName('SelectAllBtn')
+        $selectNoneBtn = $dlg.FindName('SelectNoneBtn')
+        $countLabel   = $dlg.FindName('CountLabel')
+
+        foreach ($rg in ($script:AllRGs | Sort-Object { $_.name })) {
+            $item = [System.Windows.Controls.ListBoxItem]::new()
+            $item.Content = $rg.name
+            $item.Tag = $rg
+            $rgList.Items.Add($item) | Out-Null
+        }
+
+        $rgList.Add_SelectionChanged({
+            $count = $rgList.SelectedItems.Count
+            $countLabel.Text = "$count selected"
+            $okBtn.IsEnabled = ($count -gt 0)
+        }.GetNewClosure())
+
+        $selectAllBtn.Add_Click({ $rgList.SelectAll() }.GetNewClosure())
+        $selectNoneBtn.Add_Click({ $rgList.UnselectAll() }.GetNewClosure())
+        $okBtn.Add_Click({ $dlg.DialogResult = $true; $dlg.Close() }.GetNewClosure())
+        $cancelBtn.Add_Click({ $dlg.DialogResult = $false; $dlg.Close() }.GetNewClosure())
+
+        $picked = $dlg.ShowDialog()
+        if (-not $picked -or $rgList.SelectedItems.Count -eq 0) { return }
+
+        $selectedRGs = @($rgList.SelectedItems | ForEach-Object { $_.Tag })
+
+        $tagsToApply = @{}
+        foreach ($t in $script:TagQueue) { $tagsToApply[$t.TagName] = $t.TagValue }
+
+        $modeLabel = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
+        $rgCount   = @($selectedRGs).Count
+
+        if ($isDryRun) {
+            $msg = "Preview applying $($tagsToApply.Count) tag(s) to $rgCount resource group(s).`n`nProceed with dry run?"
+            $confirm = [System.Windows.MessageBox]::Show($msg, 'Confirm Dry Run', 'YesNo', 'Question')
+        } else {
+            $msg = "You are about to apply $($tagsToApply.Count) tag(s) to $rgCount resource group(s).`n`nThis is a LIVE operation. Continue?"
+            $confirm = [System.Windows.MessageBox]::Show($msg, 'Confirm Tag Application', 'YesNo', 'Warning')
+        }
+        if ($confirm -ne 'Yes') { return }
+
+        try {
+            $ui.ApplyTagsButton.IsEnabled = $false
+            $results = [System.Collections.Generic.List[PSObject]]::new()
+            $done = 0
+
+            foreach ($rgObj in $selectedRGs) {
+                $done++
+                $pct = [math]::Round(($done / [math]::Max($rgCount,1)) * 100)
+                Update-Status "[$modeLabel] Tagging RG $done / $rgCount - $($rgObj.name)" $pct
+
+                $status = 'Success'
+                $detail = ''
+
+                try {
+                    if ($isDryRun) {
+                        $status = 'DryRun'
+                        $detail = ($tagsToApply.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
+                    } else {
+                        $resource = Get-AzTag -ResourceId $rgObj.id -ErrorAction Stop
+                        $existing = @{}
+                        if ($resource.Properties -and $resource.Properties.TagsProperty) {
+                            foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
+                                $existing[$kv.Key] = $kv.Value
+                            }
+                        }
+
+                        $merged = @{}
+                        foreach ($kv in $existing.GetEnumerator()) { $merged[$kv.Key] = $kv.Value }
+
+                        $applied = @()
+                        $skipped = @()
+                        foreach ($kv in $tagsToApply.GetEnumerator()) {
+                            if ($merged.ContainsKey($kv.Key) -and -not $overwrite) {
+                                $skipped += $kv.Key
+                            } else {
+                                $merged[$kv.Key] = $kv.Value
+                                $applied += $kv.Key
+                            }
+                        }
+
+                        if (@($applied).Count -gt 0) {
+                            Update-AzTag -ResourceId $rgObj.id -Tag $merged -Operation Merge -ErrorAction Stop | Out-Null
+                            $detail = "Applied: $($applied -join ', ')"
+                            if (@($skipped).Count -gt 0) { $detail += " | Skipped (exists): $($skipped -join ', ')" }
+                        } else {
+                            $status = 'Skipped'
+                            $detail = 'All tags already exist'
+                        }
+                    }
+                } catch {
+                    $status = 'Error'
+                    $detail = $_.Exception.Message
+                }
+
+                $results.Add([PSCustomObject]@{
+                    Resource = $rgObj.name; Kind = 'ResourceGroup'
+                    Status = $status; Detail = $detail
+                })
+                $ui.ApplyResultsGrid.ItemsSource = @($results)
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+
+            $ui.ApplyResultsGrid.ItemsSource = @($results)
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
+            $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
+            $ui.ApplyStatusText.Text = "$modeLabel complete - $successCount succeeded, $errorCount failed out of $rgCount"
+
+            $ui.ApplyTagsButton.IsEnabled = $true
+            Update-Status "$modeLabel tagging complete - $rgCount resource groups processed" 100
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+        catch {
+            $ui.ApplyTagsButton.IsEnabled = $true
+            Update-Status "Apply error: $($_.Exception.Message)" 0
+            [System.Windows.MessageBox]::Show(
+                "Tag application failed:`n$($_.Exception.Message)",
+                'Apply Error', 'OK', 'Error') | Out-Null
+        }
+        return
+    }
+
+    # ── Normal queue-based mode ─────────────────────────────
+    if ($script:TagQueue.Count -eq 0) {
+        [System.Windows.MessageBox]::Show('Add at least one tag to the queue first.', 'No Tags', 'OK', 'Warning') | Out-Null
+        return
+    }
 
     # Build tag hashtable from queue
     $tagsToApply = @{}
@@ -799,6 +984,13 @@ $ui.RefreshTagListButton.Add_Click({
         $tagMap = ConvertTo-TagHashtable $res.tags
         foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
     }
+    # Also pull from ARM tags API (catches resources ARG doesn't index)
+    try {
+        $armTags = Get-AzTag -ErrorAction SilentlyContinue
+        foreach ($t in $armTags) {
+            if ($t.TagName) { $tagKeys[$t.TagName] = $true }
+        }
+    } catch {}
 
     foreach ($k in ($tagKeys.Keys | Sort-Object)) {
         $ui.RemoveTagSelector.Items.Add($k) | Out-Null

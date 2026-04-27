@@ -3,7 +3,7 @@
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell&logoColor=white)
 ![Azure Az Modules](https://img.shields.io/badge/Azure-Az%20Modules-0078D4?logo=microsoftazure&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-![Version 1.1.1](https://img.shields.io/badge/Version-1.1.1-brightgreen)
+![Version 1.2.0](https://img.shields.io/badge/Version-1.2.0-brightgreen)
 
 A PowerShell WPF application that scans an Azure subscription for existing tags
 across resource groups and resources, identifies tagging gaps against a
@@ -35,6 +35,7 @@ The Azure Resource Tagger scans what exists, determines what's missing and bulk 
 | **Gap Analysis** | Resource Graph + required-tag list | Which RGs are missing which required tags |
 | **Coverage Metrics** | Resource Graph | Tag coverage %, untagged RG count, unique tag keys |
 | **Bulk Tagging** | ARM Tags API (`Update-AzTag -Operation Merge`) | Apply one or more tags to RGs or resources at scale |
+| **Selective Tagging** | ARM Tags API + RG picker dialog | Apply tags to hand-picked resource groups |
 | **Tag Removal** | ARM Tags API (`Update-AzTag -Operation Delete`) | Remove tags by key (with optional value filter) at scale |
 | **Dry Run** | Local preview | Preview what would be changed before committing |
 | **CSV Export** | Scan results | Full tag inventory exported for offline analysis |
@@ -84,7 +85,12 @@ Install-Module Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser
 
 ### Apply Tags
 - Define tags (name + value) and queue them for application
-- Choose target scope: all RGs, RGs missing a tag, all resources, or untagged resources
+- Choose target scope:
+  - **All Resource Groups in Scope** -- every scanned RG gets the queued tags
+  - **All Resource Groups Missing This Tag** -- only RGs that don't have the first queued tag key
+  - **All Resources in Scope** -- every scanned resource gets the queued tags
+  - **All Untagged Resources** -- only resources with zero tags
+  - **Selected Resource Groups** -- opens a multi-select picker dialog where you choose exactly which RGs to tag (supports Ctrl+click, Shift+click, and Select All / Select None)
 - **Overwrite** toggle controls whether existing tag values are replaced
 - **Dry Run** mode previews changes without applying (enabled by default)
 - Confirmation dialog before any live operation

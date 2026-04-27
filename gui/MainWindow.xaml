@@ -366,6 +366,7 @@
                                         <ComboBoxItem Content="All Resource Groups Missing This Tag"/>
                                         <ComboBoxItem Content="All Resources in Scope"/>
                                         <ComboBoxItem Content="All Untagged Resources"/>
+                                        <ComboBoxItem Content="Selected Resource Groups"/>
                                     </ComboBox>
                                     <CheckBox x:Name="OverwriteCheck" Grid.Row="1" Grid.Column="1" Content="Overwrite existing tag values"
                                               FontSize="13" Margin="0,0,0,8" IsChecked="False"/>

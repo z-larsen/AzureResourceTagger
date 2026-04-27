@@ -2,6 +2,12 @@
 
 All notable changes to the Azure Resource Tagger will be documented in this file.
 
+## [1.2.0] - 2026-04-27
+
+### Added
+- **Selected Resource Groups** scope in Apply Tags tab -- opens a multi-select picker dialog so you can choose exactly which RGs receive tags (Ctrl+click, Shift+click, Select All / Select None)
+- ARM Tags API (`Get-AzTag`) discovery for Remove Tags dropdown -- catches tag keys on resource types that Azure Resource Graph doesn't index, matching what the Azure Portal Tags blade shows
+
 ## [1.1.1] - 2026-04-23
 
 ### Fixed
