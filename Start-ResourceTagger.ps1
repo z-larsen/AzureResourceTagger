@@ -1194,7 +1194,7 @@ $ui.RefreshTagListButton.Add_Click({
     try {
         $armTags = Get-AzTag -ErrorAction SilentlyContinue
         foreach ($t in $armTags) {
-            if ($t.TagName) { $tagKeys[$t.TagName] = $true }
+            if ($t.PSObject.Properties.Match('TagName').Count -gt 0 -and $t.TagName) { $tagKeys[$t.TagName] = $true }
         }
     } catch {}
 
