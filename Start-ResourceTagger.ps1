@@ -163,7 +163,9 @@ function Search-AzGraphSafe {
         }
         if ($skip) { $params['SkipToken'] = $skip }
 
+        [System.Windows.Forms.Application]::DoEvents()
         $result = Search-AzGraph @params
+        [System.Windows.Forms.Application]::DoEvents()
         if ($result.Data) { $all.AddRange($result.Data) }
         elseif ($result) {
             foreach ($r in $result) { $all.Add($r) }
@@ -520,6 +522,7 @@ $ui.ScanButton.Add_Click({
         }
         # Also pull from ARM tags API (catches resources ARG doesn't index)
         try {
+            [System.Windows.Forms.Application]::DoEvents()
             $armTags = Get-AzTag -ErrorAction SilentlyContinue
             foreach ($t in $armTags) {
                 if ($t.TagName) { $removeTagKeys[$t.TagName] = $true }
