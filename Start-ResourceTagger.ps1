@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Azure Resource Tagger - Scan existing tags and bulk-apply new tags to Azure resources.
 
@@ -118,16 +118,24 @@ $ui.RequiredTagsInput.Add_LostFocus({
 })
 
 # ─────────────────────────────────────────────────────────────────
+# Helper: Flush WPF dispatcher (replaces WinForms DoEvents)
+# ─────────────────────────────────────────────────────────────────
+function Flush-UI {
+    $window.Dispatcher.Invoke(
+        [System.Windows.Threading.DispatcherPriority]::Background,
+        [Action]{ }
+    )
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Helper: Update status bar
 # ─────────────────────────────────────────────────────────────────
 function Update-Status {
     param([string]$Message, [int]$Progress = -1)
     $ui.StatusText.Text = $Message
     if ($Progress -ge 0) { $ui.ProgressBar.Value = $Progress }
-    [System.Windows.Forms.Application]::DoEvents()
+    Flush-UI
 }
-
-Add-Type -AssemblyName System.Windows.Forms   # for DoEvents
 
 # ─────────────────────────────────────────────────────────────────
 # Helper: Convert tag object (hashtable, OrderedDictionary,
@@ -167,9 +175,9 @@ function Search-AzGraphSafe {
         }
         if ($skip) { $params['SkipToken'] = $skip }
 
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         $result = Search-AzGraph @params
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         if ($result.Data) { $all.AddRange($result.Data) }
         elseif ($result) {
             foreach ($r in $result) { $all.Add($r) }
@@ -366,14 +374,14 @@ $ui.SubscriptionSelector.Add_SelectionChanged({
     if ($idx -lt 0) { return }
     $sub = $script:Subscriptions[$idx]
     Set-AzContext -SubscriptionId $sub.Id -ErrorAction SilentlyContinue | Out-Null
-    [System.Windows.Forms.Application]::DoEvents()
+    Flush-UI
 
     $ui.RGSelector.Items.Clear()
     $ui.RGSelector.Items.Add('(All Resource Groups)') | Out-Null
     try {
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         $rgs = Get-AzResourceGroup | Sort-Object ResourceGroupName
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         foreach ($rg in $rgs) {
             $ui.RGSelector.Items.Add($rg.ResourceGroupName) | Out-Null
         }
@@ -414,7 +422,7 @@ $ui.ScanButton.Add_Click({
         $ui.UniqueTagsText.Text    = '-'
 
         Update-Status 'Scanning resource groups...' 10
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         # --- Resource Groups ---
         $rgFilter = $null
@@ -424,14 +432,14 @@ $ui.ScanButton.Add_Click({
 
         $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | project name, id, location, tags, subscriptionId"
         $allRGs  = Search-AzGraphSafe -Query $rgQuery -Subscriptions @($subId)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         if ($rgFilter) {
             $allRGs = $allRGs | Where-Object { $_.name -eq $rgFilter }
         }
 
         Update-Status 'Scanning resources...' 40
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         # --- Resources ---
         if ($rgFilter) {
@@ -441,13 +449,13 @@ $ui.ScanButton.Add_Click({
             $resQuery = "resources | project name, type, resourceGroup, location, tags, subscriptionId, id"
         }
         $allResources = Search-AzGraphSafe -Query $resQuery -Subscriptions @($subId)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         $script:AllRGs       = $allRGs
         $script:AllResources = $allResources
 
         Update-Status 'Building tag summary...' 70
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         # --- Required tags ---
         $requiredTags = @()
@@ -521,13 +529,13 @@ $ui.ScanButton.Add_Click({
 
         # --- Bind grids ---
         Update-Status 'Updating display...' 85
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         $ui.TagSummaryGrid.ItemsSource = @($tagSummary)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         $ui.RGGrid.ItemsSource         = @($rgSorted)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         $ui.ResourceGrid.ItemsSource   = @($resSorted)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         # --- Summary cards ---
         $ui.RGCountText.Text       = @($allRGs).Count.ToString()
@@ -539,11 +547,11 @@ $ui.ScanButton.Add_Click({
         $ui.ExportButton.IsEnabled  = $true
         $ui.ApplyTagsButton.IsEnabled = $true
         $ui.ScanButton.IsEnabled    = $true
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         # Auto-populate Remove Tags dropdown
         Update-Status 'Discovering tag keys...' 90
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
         $ui.RemoveTagSelector.Items.Clear()
         $removeTagKeys = @{}
         foreach ($rg in $script:AllRGs) {
@@ -556,9 +564,9 @@ $ui.ScanButton.Add_Click({
         }
         # Also pull from ARM tags API (catches resources ARG doesn't index)
         try {
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
             $armTags = Get-AzTag -ErrorAction SilentlyContinue
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
             foreach ($t in $armTags) {
                 if ($t.TagName) { $removeTagKeys[$t.TagName] = $true }
             }
@@ -570,10 +578,10 @@ $ui.ScanButton.Add_Click({
             $ui.RemoveTagSelector.SelectedIndex = 0
         }
         $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         # Record scan scope for stale-data detection
         $script:LastScanSubIdx = $ui.SubscriptionSelector.SelectedIndex
@@ -750,12 +758,12 @@ $ui.ResTagSelectedButton.Add_Click({
     foreach ($resObj in $selected) {
         try {
             Update-Status "Tagging $($resObj.Name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
 
             $resId = $resObj.ResourceId
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
             $resource = Get-AzTag -ResourceId $resId -ErrorAction Stop
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
             $existing = @{}
             if ($resource.Properties -and $resource.Properties.TagsProperty) {
                 foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
@@ -768,10 +776,10 @@ $ui.ResTagSelectedButton.Add_Click({
             } else {
                 $tagHash = @{ $tagName = $tagValue }
                 Update-AzTag -ResourceId $resId -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
-                [System.Windows.Forms.Application]::DoEvents()
+                Flush-UI
                 $successCount++
             }
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
         } catch {
             $errorCount++
             $lastErr = $_.Exception.Message
@@ -960,11 +968,11 @@ $ui.ApplyTagsButton.Add_Click({
                     Status = $status; Detail = $detail
                 })
                 $ui.ApplyResultsGrid.ItemsSource = @($results)
-                [System.Windows.Forms.Application]::DoEvents()
+                Flush-UI
             }
 
             $ui.ApplyResultsGrid.ItemsSource = @($results)
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
 
             $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
             $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
@@ -972,7 +980,7 @@ $ui.ApplyTagsButton.Add_Click({
 
             $ui.ApplyTagsButton.IsEnabled = $true
             Update-Status "$modeLabel tagging complete - $rgCount resource groups processed" 100
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
         }
         catch {
             $ui.ApplyTagsButton.IsEnabled = $true
@@ -1107,11 +1115,11 @@ $ui.ApplyTagsButton.Add_Click({
                 Detail   = $detail
             })
             $ui.ApplyResultsGrid.ItemsSource = @($results)
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
         }
 
         $ui.ApplyResultsGrid.ItemsSource = @($results)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
         $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
@@ -1119,7 +1127,7 @@ $ui.ApplyTagsButton.Add_Click({
 
         $ui.ApplyTagsButton.IsEnabled = $true
         Update-Status "$modeLabel tagging complete - $total targets processed" 100
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
     }
     catch {
         $ui.ApplyTagsButton.IsEnabled = $true
@@ -1273,11 +1281,11 @@ $ui.RemoveTagsButton.Add_Click({
                 Detail        = $detail
             })
             $ui.RemoveResultsGrid.ItemsSource = @($results)
-            [System.Windows.Forms.Application]::DoEvents()
+            Flush-UI
         }
 
         $ui.RemoveResultsGrid.ItemsSource = @($results)
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
 
         $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
         $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
@@ -1285,7 +1293,7 @@ $ui.RemoveTagsButton.Add_Click({
 
         $ui.RemoveTagsButton.IsEnabled = $true
         Update-Status "$modeLabel removal complete - $total targets processed" 100
-        [System.Windows.Forms.Application]::DoEvents()
+        Flush-UI
     }
     catch {
         $ui.RemoveTagsButton.IsEnabled = $true
