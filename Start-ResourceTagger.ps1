@@ -1179,6 +1179,9 @@ $ui.RemoveTagValueFilter.Add_LostFocus({
 # REMOVE TAGS - Refresh tag list from scan data
 # ─────────────────────────────────────────────────────────────────
 $ui.RefreshTagListButton.Add_Click({
+    $ui.RefreshTagListButton.IsEnabled = $false
+    Update-Status 'Refreshing tag list...' 50
+
     $ui.RemoveTagSelector.Items.Clear()
     $tagKeys = @{}
 
@@ -1205,6 +1208,7 @@ $ui.RefreshTagListButton.Add_Click({
         $ui.RemoveTagSelector.SelectedIndex = 0
     }
     $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
+    $ui.RefreshTagListButton.IsEnabled = $true
     Update-Status "Tag list refreshed - $(@($tagKeys.Keys).Count) unique keys found" 100
 })
 
