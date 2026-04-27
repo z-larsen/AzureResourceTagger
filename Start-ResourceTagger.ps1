@@ -399,8 +399,21 @@ $ui.ScanButton.Add_Click({
     $subId = $sub.Id
 
     try {
-        Update-Status 'Scanning resource groups...' 10
         $ui.ScanButton.IsEnabled = $false
+        $ui.ApplyTagsButton.IsEnabled = $false
+        $ui.ExportButton.IsEnabled = $false
+
+        # Clear previous results so WPF isn't rendering stale data during scan
+        $ui.TagSummaryGrid.ItemsSource = $null
+        $ui.RGGrid.ItemsSource         = $null
+        $ui.ResourceGrid.ItemsSource   = $null
+        $ui.RGCountText.Text       = '-'
+        $ui.ResourceCountText.Text = '-'
+        $ui.TagCoverageText.Text   = '-'
+        $ui.UntaggedRGText.Text    = '-'
+        $ui.UniqueTagsText.Text    = '-'
+
+        Update-Status 'Scanning resource groups...' 10
         [System.Windows.Forms.Application]::DoEvents()
 
         # --- Resource Groups ---
@@ -411,6 +424,7 @@ $ui.ScanButton.Add_Click({
 
         $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | project name, id, location, tags, subscriptionId"
         $allRGs  = Search-AzGraphSafe -Query $rgQuery -Subscriptions @($subId)
+        [System.Windows.Forms.Application]::DoEvents()
 
         if ($rgFilter) {
             $allRGs = $allRGs | Where-Object { $_.name -eq $rgFilter }
@@ -427,6 +441,7 @@ $ui.ScanButton.Add_Click({
             $resQuery = "resources | project name, type, resourceGroup, location, tags, subscriptionId, id"
         }
         $allResources = Search-AzGraphSafe -Query $resQuery -Subscriptions @($subId)
+        [System.Windows.Forms.Application]::DoEvents()
 
         $script:AllRGs       = $allRGs
         $script:AllResources = $allResources
@@ -505,10 +520,14 @@ $ui.ScanButton.Add_Click({
         $uniqueTags = $tagKeyCount.Keys.Count
 
         # --- Bind grids ---
+        Update-Status 'Updating display...' 85
         [System.Windows.Forms.Application]::DoEvents()
         $ui.TagSummaryGrid.ItemsSource = @($tagSummary)
+        [System.Windows.Forms.Application]::DoEvents()
         $ui.RGGrid.ItemsSource         = @($rgSorted)
+        [System.Windows.Forms.Application]::DoEvents()
         $ui.ResourceGrid.ItemsSource   = @($resSorted)
+        [System.Windows.Forms.Application]::DoEvents()
 
         # --- Summary cards ---
         $ui.RGCountText.Text       = @($allRGs).Count.ToString()
@@ -520,8 +539,11 @@ $ui.ScanButton.Add_Click({
         $ui.ExportButton.IsEnabled  = $true
         $ui.ApplyTagsButton.IsEnabled = $true
         $ui.ScanButton.IsEnabled    = $true
+        [System.Windows.Forms.Application]::DoEvents()
 
         # Auto-populate Remove Tags dropdown
+        Update-Status 'Discovering tag keys...' 90
+        [System.Windows.Forms.Application]::DoEvents()
         $ui.RemoveTagSelector.Items.Clear()
         $removeTagKeys = @{}
         foreach ($rg in $script:AllRGs) {
@@ -536,6 +558,7 @@ $ui.ScanButton.Add_Click({
         try {
             [System.Windows.Forms.Application]::DoEvents()
             $armTags = Get-AzTag -ErrorAction SilentlyContinue
+            [System.Windows.Forms.Application]::DoEvents()
             foreach ($t in $armTags) {
                 if ($t.TagName) { $removeTagKeys[$t.TagName] = $true }
             }
@@ -547,8 +570,10 @@ $ui.ScanButton.Add_Click({
             $ui.RemoveTagSelector.SelectedIndex = 0
         }
         $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
+        [System.Windows.Forms.Application]::DoEvents()
 
         Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
+        [System.Windows.Forms.Application]::DoEvents()
 
         # Record scan scope for stale-data detection
         $script:LastScanSubIdx = $ui.SubscriptionSelector.SelectedIndex
