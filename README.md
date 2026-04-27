@@ -65,6 +65,10 @@ The Azure Resource Tagger scans what exists, determines what's missing and bulk 
 Install-Module Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser
 ```
 
+> **No elevated or admin permissions are required on your local machine.** The script
+> runs in your normal user context. All it needs is the Azure RBAC roles listed
+> under [Required Permissions](#required-permissions) below.
+
 ---
 
 ## Tabs
@@ -82,6 +86,8 @@ Install-Module Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser
 ### Resources
 - All resources with type, resource group, tag count, and tags
 - Filter: all, untagged, or missing a specific tag
+- **Tag Selected** button -- select one or more resources in the grid (Ctrl+click / Shift+click), click the button, enter a tag name and value in the popup, and the tag is applied directly
+- Inline **Overwrite** checkbox controls whether existing tag values are replaced on selected resources
 
 ### Apply Tags
 - Define tags (name + value) and queue them for application
