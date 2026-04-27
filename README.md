@@ -160,6 +160,33 @@ AzureResourceTagger/
 
 ---
 
+## Author
+
+**Zac Larsen** — Personal project (not an official Microsoft product)
+
+---
+
+## Support & Responsible Use
+
+This tool queries only public Azure APIs (Resource Graph, ARM Tags) against **your own Azure subscriptions**. It reads resource metadata (such as subscription IDs/names, resource groups, resource types, and tags) and writes results locally (console output and CSV exports); it does **not** transmit this data off your machine except as required to call Azure APIs.
+
+- **Issues & PRs:** Welcome! Please do not include subscription IDs, tenant IDs, internal URLs, or any confidential information.
+- **Azure support:** For Azure platform issues or outages, contact [Azure Support](https://azure.microsoft.com/support/) — not this repository.
+- **Exported files:** Review CSV exports before sharing externally — they may contain subscription IDs, resource names, and tag values for your environment.
+
+This project may access or process Resource Graph, ARM Tags, Subscription, and Resource Group metadata through Azure APIs.
+
+Execution of this tool may initiate:
+
+- Resource discovery
+- Tag inventory and gap analysis
+- Tag application (merge) to resource groups and resources
+- Tag removal (delete) from resource groups and resources
+
+Ensure that least-privilege access is used when running this utility.
+
+---
+
 ## OSS Project Disclaimer
 
 This repository contains sample tooling developed by a Microsoft employee and is provided for informational and educational purposes only.
