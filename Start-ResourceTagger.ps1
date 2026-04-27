@@ -186,11 +186,25 @@ function Search-AzGraphSafe {
         Flush-UI
         $result = Search-AzGraph @params
         Flush-UI
-        if ($result.Data) { $all.AddRange($result.Data) }
-        elseif ($result) {
-            foreach ($r in $result) { $all.Add($r) }
+
+        # Handle both old (direct array) and new (PSResourceGraphResponse) return types
+        $rows = $null
+        if ($result.PSObject.Properties.Match('Data').Count -gt 0 -and $result.Data) {
+            $rows = $result.Data
+        } elseif ($result -is [System.Collections.IEnumerable] -and $result -isnot [string]) {
+            $rows = $result
         }
-        $skip = $result.SkipToken
+
+        if ($rows) {
+            foreach ($r in $rows) {
+                # Only add objects that look like resource data (have a name or id property)
+                if ($r.PSObject.Properties.Match('name').Count -gt 0 -or $r.PSObject.Properties.Match('id').Count -gt 0) {
+                    $all.Add($r)
+                }
+            }
+        }
+
+        $skip = if ($result.PSObject.Properties.Match('SkipToken').Count -gt 0) { $result.SkipToken } else { $null }
     } while ($skip)
 
     return $all
