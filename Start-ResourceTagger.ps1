@@ -9,7 +9,7 @@
     preparing a subscription for Azure Policy tag enforcement.
 
 .NOTES
-    Version : 1.2.0
+    Version : 1.2.1
     Author  : Zac Larsen
     Requires: Az.Accounts, Az.Resources, Az.ResourceGraph
 #>
@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:ScriptRoot = $PSScriptRoot
-$script:Version    = '1.2.0'
+$script:Version    = '1.2.1'
 
 # ─────────────────────────────────────────────────────────────────
 # WPF bootstrap
