@@ -3,7 +3,7 @@
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell&logoColor=white)
 ![Azure Az Modules](https://img.shields.io/badge/Azure-Az%20Modules-0078D4?logo=microsoftazure&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-![Version 1.2.0](https://img.shields.io/badge/Version-1.2.0-brightgreen)
+![Version 1.2.2](https://img.shields.io/badge/Version-1.2.2-brightgreen)
 
 A PowerShell WPF application that scans an Azure subscription for existing tags
 across resource groups and resources, identifies tagging gaps against a
