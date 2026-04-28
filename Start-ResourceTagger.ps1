@@ -1201,12 +1201,13 @@ $ui.RemoveTagValueFilter.Add_LostFocus({
 # REMOVE TAGS - Refresh tag list from scan data
 # ─────────────────────────────────────────────────────────────────
 $ui.RefreshTagListButton.Add_Click({
+    if ($script:Scanning) { return }
     $ui.RefreshTagListButton.IsEnabled = $false
     Update-Status 'Refreshing tag list...' 50
+    Flush-UI
 
-    $ui.RemoveTagSelector.Items.Clear()
+    # Collect tag keys from already-scanned data only — no extra API calls
     $tagKeys = @{}
-
     foreach ($rg in $script:AllRGs) {
         $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
         foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
@@ -1215,16 +1216,8 @@ $ui.RefreshTagListButton.Add_Click({
         $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
         foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
     }
-    # Also pull from ARM tags API (catches resources ARG doesn't index)
-    try {
-        Flush-UI
-        $armTags = Get-AzTag -ErrorAction SilentlyContinue
-        Flush-UI
-        foreach ($t in $armTags) {
-            if ($t.PSObject.Properties.Match('TagName').Count -gt 0 -and $t.TagName) { $tagKeys[$t.TagName] = $true }
-        }
-    } catch {}
 
+    $ui.RemoveTagSelector.Items.Clear()
     foreach ($k in ($tagKeys.Keys | Sort-Object)) {
         $ui.RemoveTagSelector.Items.Add($k) | Out-Null
     }
