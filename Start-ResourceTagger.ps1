@@ -9,7 +9,7 @@
     preparing a subscription for Azure Policy tag enforcement.
 
 .NOTES
-    Version : 1.2.1
+    Version : 1.2.2
     Author  : Zac Larsen
     Requires: Az.Accounts, Az.Resources, Az.ResourceGraph
 #>
@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:ScriptRoot = $PSScriptRoot
-$script:Version    = '1.2.1'
+$script:Version    = '1.2.2'
 
 # ─────────────────────────────────────────────────────────────────
 # WPF bootstrap
@@ -165,6 +165,53 @@ function Get-SafeTags {
 # ─────────────────────────────────────────────────────────────────
 # Helper: Safe Resource Graph query with paging
 # ─────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+# Run Update-AzTag in a background runspace so the UI stays
+# responsive during bulk live tag operations.
+# ─────────────────────────────────────────────────────────────────
+function Invoke-AzTagUpdateSafe {
+    param(
+        [string]$ResourceId,
+        [hashtable]$Tag,
+        [string]$Operation = 'Delete',
+        [int]$TimeoutSeconds = 60
+    )
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript({
+        param($rid, $tag, $op)
+        Update-AzTag -ResourceId $rid -Tag $tag -Operation $op -ErrorAction Stop | Out-Null
+    }).AddArgument($ResourceId).AddArgument($Tag).AddArgument($Operation)
+
+    $asyncResult = $ps.BeginInvoke()
+    $deadline    = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    while (-not $asyncResult.IsCompleted -and (Get-Date) -lt $deadline) {
+        $frame = [System.Windows.Threading.DispatcherFrame]::new()
+        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
+            [System.Windows.Threading.DispatcherPriority]::Background,
+            [action]{ $frame.Continue = $false }
+        )
+        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+        Start-Sleep -Milliseconds 100
+    }
+
+    try {
+        if ($asyncResult.IsCompleted) {
+            $ps.EndInvoke($asyncResult)
+            if ($ps.Streams.Error.Count -gt 0) { throw $ps.Streams.Error[0].Exception }
+        } else {
+            $ps.Stop()
+            throw [System.TimeoutException]::new("Update-AzTag timed out after $($TimeoutSeconds)s")
+        }
+    } finally {
+        $ps.Dispose()
+        $rs.Close()
+    }
+}
+
 function Search-AzGraphSafe {
     param(
         [string]$Query,
@@ -589,15 +636,6 @@ $ui.ScanButton.Add_Click({
             $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
             foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
         }
-        # Also pull from ARM tags API (catches resources ARG doesn't index)
-        try {
-            $armTags = Get-AzTag -ErrorAction SilentlyContinue
-            foreach ($t in $armTags) {
-                if ($t.PSObject.Properties.Match('TagName').Count -gt 0 -and $t.TagName) {
-                    $removeTagKeys[$t.TagName] = $true
-                }
-            }
-        } catch {}
         foreach ($k in ($removeTagKeys.Keys | Sort-Object)) {
             $ui.RemoveTagSelector.Items.Add($k) | Out-Null
         }
@@ -1310,9 +1348,7 @@ $ui.RemoveTagsButton.Add_Click({
                     $detail = "Would remove $tagToRemove=$($target.CurrentValue)"
                 } else {
                     $tagToDelete = @{ $tagToRemove = $target.CurrentValue }
-                    Flush-UI
-                    Update-AzTag -ResourceId $target.Id -Tag $tagToDelete -Operation Delete -ErrorAction Stop | Out-Null
-                    Flush-UI
+                    Invoke-AzTagUpdateSafe -ResourceId $target.Id -Tag $tagToDelete -Operation Delete
                     $detail = "Removed $tagToRemove=$($target.CurrentValue)"
                 }
             }
