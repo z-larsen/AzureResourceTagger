@@ -17,16 +17,17 @@ or read the [release notes](CHANGELOG.md).
 
 ## Why this exists
 
+Azure Policy can enforce tags, and applicable **modify** policies can update
+existing resources through [remediation tasks](https://learn.microsoft.com/azure/governance/policy/how-to/remediate-resources).
+It's great for ongoing governance once the tag foundation has been set. 
+
+But what if you don't have IaC fully implemented yet? What if your environment is large and your tagging spans years of deployments where some resources were tagged, some weren't or some were tagged using older standards you no longer follow?
+
+This tool was made for that interactive cleanup. Use Azure Policy for ongoing governance.
 Tag cleanup is easier when you can see what needs attention before making a bulk
 change. This tool gives you that view, whether you're filling gaps, updating
 existing values, or preparing a subscription for Azure Policy tag enforcement.
 
-Azure Policy can enforce tags, and applicable **modify** policies can update
-existing resources through [remediation tasks](https://learn.microsoft.com/azure/governance/policy/how-to/remediate-resources).
-Deny policies don't fill in missing tags. They can block noncompliant create or
-update requests when enforcement is enabled.
-
-Use this tool for interactive cleanup. Use Azure Policy for ongoing governance.
 
 ## Prerequisites
 
