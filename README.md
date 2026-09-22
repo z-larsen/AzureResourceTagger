@@ -5,270 +5,325 @@
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
 ![Version 1.3.0](https://img.shields.io/badge/Version-1.3.0-brightgreen)
 
-A PowerShell WPF application that scans an Azure subscription for existing tags
-across resource groups and resources, identifies tagging gaps against a
-configurable required-tag list, and lets you bulk-apply tags at scale with a
-dry-run-first workflow.
+Find tagging gaps, review proposed changes, and apply or remove tags across Azure
+resource groups and resources.
 
-Built for governance and compliance workflows -- especially useful when
-preparing a subscription for Azure Policy tag enforcement and backfilling tags
-on existing resources before turning on deny policies.
+Azure Resource Tagger is a Windows desktop tool built with PowerShell and Windows
+Presentation Foundation (WPF). The workflow is straightforward: connect, scan,
+preview, then confirm. Dry run is on by default for every tagging workflow.
 
----
+Start with the [quick start](#quick-start), check the [known limits](#know-the-limits),
+or read the [release notes](CHANGELOG.md).
 
-## Why This Exists
+## Why this exists
 
-Azure Policy can enforce tags, and applicable **modify** policies can backfill
-existing resources through remediation tasks. Deny policies do not backfill tags:
-noncompliant create or update requests can be blocked when enforcement is enabled.
+Tag cleanup is easier when you can see what needs attention before making a bulk
+change. This tool gives you that view, whether you're filling gaps, updating
+existing values, or preparing a subscription for Azure Policy tag enforcement.
 
-Azure Resource Tagger provides an interactive way to inspect gaps, review exact
-changes, and apply desired tags before enforcing policies.
+Azure Policy can enforce tags, and applicable **modify** policies can update
+existing resources through [remediation tasks](https://learn.microsoft.com/azure/governance/policy/how-to/remediate-resources).
+Deny policies don't fill in missing tags. They can block noncompliant create or
+update requests when enforcement is enabled.
 
----
-
-## What It Does
-
-| Area | Data Source | What You See |
-|------|-----------|--------------|
-| **Tag Inventory** | Azure Resource Graph | Every tag name/value on RGs and resources in scope |
-| **Gap Analysis** | Resource Graph + required-tag list | Which RGs are missing which required tags |
-| **Coverage Metrics** | Resource Graph | Resources with any tag %, untagged RG count, unique RG tag keys |
-| **Bulk Tagging** | ARM Tags API (`Update-AzTag -Operation Merge`) | Apply one or more tags to RGs or resources at scale |
-| **Selective Tagging** | ARM Tags API + RG picker dialog | Apply tags to hand-picked resource groups |
-| **Tag Removal** | ARM Tags API (`Update-AzTag -Operation Delete`) | Remove tags by key with optional exact, case-sensitive value matching |
-| **Dry Run** | Current ARM tag reads + shared planner | See additions, changes, removals, skips, and read errors without writes |
-| **CSV Export** | Scan results | Full tag inventory for offline analysis, with formula-like text neutralized |
-
----
-
-## Quick Start
-
-```powershell
-# If downloaded from GitHub, unblock the files first:
-Get-ChildItem -Path .\AzureResourceTagger -Recurse | Unblock-File
-
-# Set execution policy if needed (current user only):
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-
-cd AzureResourceTagger
-.\Start-ResourceTagger.ps1
-```
-
-**Alternative -- run with bypass (no policy change required):**
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Start-ResourceTagger.ps1
-```
-
-> **"Not digitally signed" error?** Windows marks downloaded files as blocked. Run
-> `Unblock-File` on the extracted folder, or use the `-ExecutionPolicy Bypass`
-> command above, or right-click the `.ps1` file → Properties → check **Unblock**.
-
-1. Click **Commercial Tenant** or **Gov Tenant** to authenticate
-2. Select a subscription (and optionally a specific resource group)
-3. Click **Scan Tags** to inventory all RGs and resources with their tags
-4. Review the **Scope & Scan**, **Resource Groups**, and **Resources** tabs
-5. Switch to **Apply Tags** to bulk-tag resources
-
----
+Use this tool for interactive cleanup. Use Azure Policy for ongoing governance.
 
 ## Prerequisites
 
-- Windows with Windows PowerShell 5.1 or PowerShell 7 (WPF is Windows-only)
-- Start PowerShell 7 in STA mode: `pwsh -STA -File .\Start-ResourceTagger.ps1`
-- Azure PowerShell modules:
+- Windows with Windows PowerShell 5.1 or PowerShell 7. WPF doesn't run on macOS or Linux.
+- The `Az.Accounts`, `Az.Resources`, and `Az.ResourceGraph` PowerShell modules.
+- An Azure account with access to the subscription you want to scan.
+
+You don't need local administrator rights. The app runs in your user context.
+
+### Required permissions
+
+| Task | Azure role |
+|------|------------|
+| Scan a subscription | **Reader** on the subscription |
+| Apply or remove tags | **Tag Contributor** on the target scope, in addition to the read access needed for scanning |
+
+These roles are a starting point, not a way around resource locks or policy.
+Use the narrowest scope that covers your work.
+
+### Cloud support
+
+| Cloud | Azure environment |
+|-------|-------------------|
+| Azure Commercial | `AzureCloud` |
+| Azure Government | `AzureUSGovernment` |
+
+## Quick start
+
+Download or clone this repository, then open PowerShell in the repository folder.
+Keep the folder structure intact so the startup script can find the core module
+and XAML files.
+
+If the required Azure modules aren't installed, install them in the PowerShell
+environment you'll use to run the app:
 
 ```powershell
 Install-Module Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser
 ```
 
-> **No elevated or admin permissions are required on your local machine.** The script
-> runs in your normal user context. All it needs is the Azure RBAC roles listed
-> under [Required Permissions](#required-permissions) below.
+Start the app in single-threaded apartment (STA) mode, which WPF requires.
 
----
+**Windows PowerShell 5.1:**
 
-## Tabs
-
-### Scope & Scan
-- Select subscription and optional RG scope
-- The scan identity shows cloud, tenant, subscription, account, RG scope, and timestamp
-- Changing the connection or scope clears the inventory and disables writes and export until another successful scan
-- Summary cards: RG count, resource count, resources with any tag %, untagged RGs, unique RG tag keys
-- Any-tag coverage is **not** required-tag compliance; the tag key summary counts RGs only
-- Tag key summary grid showing which tags exist and their coverage across RGs
-
-### Resource Groups
-- Full list of resource groups with tag count, missing tags, and all current tags
-- Filter to show only RGs missing required tags
-- Configurable required-tag list (comma-separated, case-insensitive, duplicate names ignored)
-- Filters and required-tag edits rebuild the view locally from the complete scan, without another Azure query
-
-### Resources
-- All resources with type, resource group, tag count, and tags
-- Filter: all, untagged, or missing a specific tag
-- **Preview Tag** button -- select resources (Ctrl+click / Shift+click), enter a tag name and value, and review the shared preview
-- Inline **Overwrite** checkbox controls whether existing tag values are replaced on selected resources
-- **Dry run** is enabled by default, just like bulk apply and removal
-- Results appear on the **Apply Tags** tab
-
-### Apply Tags
-- Define tags (name + value) and queue them for application
-- Choose target scope:
-  - **All Resource Groups in Scope** -- every scanned RG gets the queued tags
-  - **RGs Missing the First Queued Tag** -- only RGs that don't have the first queued tag key
-  - **All Resources in Scope** -- every scanned resource gets the queued tags
-  - **All Untagged Resources** -- only resources with zero tags
-  - **Selected Resource Groups** -- opens a multi-select picker dialog where you choose exactly which RGs to tag (supports Ctrl+click, Shift+click, and Select All / Select None)
-- **Overwrite** toggle controls whether existing tag values are replaced
-- Eligibility and existing values are checked against fresh ARM tag reads, not just the scan snapshot
-- Merges send only changed/new keys; unrelated existing tags are not resent
-- Unchanged values are skipped, and tag value whitespace and empty strings are preserved
-- **Dry Run** mode previews changes without applying (enabled by default)
-- The preview is also the explicit confirmation step for live operations
-- Results show resource ID, tag, before/after values, action, status, and detail
-
-### Remove Tags
-- Tag key dropdown auto-populates from scan data (or type manually)
-- **Match exact value** is off by default, meaning any value for the selected key
-- When enabled, matching is case-sensitive and preserves whitespace; an empty input matches only an empty tag value
-- Choose scope: all RGs, all resources, or both
-- **Dry Run** mode previews removals without executing (enabled by default)
-- Shared preview and explicit confirmation before live removal
-- Results show each tag's previous value and final status
-
-### Safety and result semantics
-
-- Every Azure inventory/tag request uses an explicit context. Planned targets must match the captured subscription and RG boundary.
-- Connection, scope, and conflicting operation controls are disabled while an operation is active. Wait for completion before closing the window.
-- Previewed tag values are re-read before writing. A changed affected tag produces **Conflict**, with no write to that target.
-- **Success** means the requested result was read back and verified. **Skipped** means no change was needed; **Error** means planning or pre-write validation failed.
-- **Unverified** means a write failed/timed out or its result could not be confirmed. It is not a success or a guarantee that nothing changed. Inspect and re-scan before retrying.
-- After any confirmed live execution, cached scan data is invalidated. Results remain visible, but another scan is required before writing or exporting.
-- Dry runs make Azure **read** requests but never write, and their preview has no executable Apply action.
-- CSV exports prefix formula-like text cells with `[text] `, including leading whitespace/control characters and full-width formula markers. This visible prefix protects spreadsheet viewing without relying on quote-only escaping. The original inventory and Azure tags are unchanged.
-
-CSV reports are intended for inspection, not lossless tag round-tripping.
-Keep the `[text] ` safety prefix when viewing or re-saving reports in spreadsheet
-software; removing it can turn untrusted metadata back into an active formula.
-
-Azure tag updates are not atomic compare-and-swap operations: rechecking reduces
-concurrency risks but cannot eliminate changes made by another tool between the
-read and the write. Resource Graph is eventually consistent, so new resources or
-recent tag changes can take time to appear in a scan. The planner refreshes tags
-only for targets already in that scan.
-
-Azure RBAC, resource locks, policy, supported resource types, and tag limits still
-apply. The app does not automatically retry uncertain writes. Inventory and
-planning reads can temporarily pause the UI; a fully asynchronous read/cancellation
-framework is outside this release.
-
----
-
-## Required Permissions
-
-| Action | Minimum Role |
-|--------|-------------|
-| Scan tags | **Reader** on the subscription |
-| Apply/remove tags | **Tag Contributor** on the target scope |
-
----
-
-## Cloud Support
-
-| Environment | Supported |
-|------------|-----------|
-| Azure Commercial (`AzureCloud`) | Yes |
-| Azure Government (`AzureUSGovernment`) | Yes |
-
----
-
-## File Structure
-
-```
-AzureResourceTagger/
-├── Start-ResourceTagger.ps1    # Main script (launch this)
-├── ResourceTagger.Core.psm1   # Scope guards, filtering, planning, and verified execution
-├── gui/
-│   ├── MainWindow.xaml        # Main WPF window
-│   └── TagPreview.xaml        # Shared review/confirmation dialog
-├── tests/
-│   ├── ResourceTagger.Core.Tests.ps1
-│   └── ResourceTagger.UI.Tests.ps1
-├── CHANGELOG.md
-├── LICENSE
-└── README.md
+```powershell
+powershell -NoProfile -STA -File .\Start-ResourceTagger.ps1
 ```
 
----
+**PowerShell 7:**
 
-## Tests
+```powershell
+pwsh -NoProfile -STA -File .\Start-ResourceTagger.ps1
+```
 
-Run on Windows, in an STA PowerShell session. Install Pester into the PowerShell
-environment you intend to test if it is not already available:
+If Windows blocks downloaded files, see [troubleshooting](#troubleshoot-common-problems).
+
+## Scan and review tags
+
+Start with a resource group you know before running a subscription-wide operation.
+
+1. Select **Commercial Tenant** or **Gov Tenant**. Sign in if prompted, then choose a tenant.
+2. On **Scope & Scan**, select a subscription. To narrow the scan, set the scope to **Resource Group** and choose a resource group.
+3. Select **Scan Tags**.
+4. Check the recorded cloud, tenant, subscription, account, resource group, and scan time.
+5. Review the summary, then use **Resource Groups** or **Resources** to inspect the inventory.
+
+The scan reads from Azure Resource Graph. It shows the resources returned for
+your selected scope and permissions, not a guaranteed inventory of every Azure
+resource type.
+
+The coverage percentage means **resources with at least one tag**. It doesn't
+mean those resources have every required tag. The tag-key summary and unique-key
+count cover resource groups only.
+
+### Find missing tags
+
+| Tab | What to do |
+|-----|------------|
+| **Resource Groups** | Enter a comma-separated list of required tag names, then select **Missing Any Required Tag**. |
+| **Resources** | Select **Untagged Resources**, or select **Missing Specific Tag** and enter one tag name. |
+
+Required-tag names are case-insensitive, and duplicates are ignored. The
+required-tag list applies to resource groups; it isn't a compliance check across
+all resources.
+
+Filters use the saved scan data. Changing a filter or required-tag name doesn't
+make another Azure request. Select **All Resource Groups** or **All Resources**
+to restore the full scanned list.
+
+## Apply tags
+
+Preview first. A dry run reads current tags from Azure, but it doesn't write any
+changes and has no enabled Apply action in the preview.
+
+### Preview a bulk update
+
+1. On **Apply Tags**, enter a tag name and value, then select **Add Tag**. Repeat for each tag you want to apply.
+2. Choose a target scope from the table below.
+3. Leave dry run selected. Select **Overwrite existing tag values** only if you intend to replace existing values.
+4. Select **Apply Tags**. If you chose **Selected Resource Groups**, select the groups and then select **Preview**.
+5. Review the scope, before-and-after values, skipped tags, and any read errors.
+
+| Target scope | What it includes |
+|--------------|------------------|
+| **All Resource Groups in Scope** | All scanned resource groups, subject to your overwrite setting |
+| **RGs Missing the First Queued Tag** | Scanned resource groups that don't have the first tag name in the queue |
+| **All Resources in Scope** | All scanned resources, subject to your overwrite setting |
+| **All Untagged Resources** | Scanned resources that currently have no tags |
+| **Selected Resource Groups** | Resource groups you choose from the scanned inventory |
+
+Here, RG means resource group. The missing-tag scope checks the **first queued
+tag**, not whether a resource group is missing any tag in the queue.
+
+The app checks eligibility and tag values against fresh Azure Resource Manager
+(ARM) tag reads. It sends only new or changed tag keys in a merge, so unrelated
+tags aren't sent back. Unchanged values are skipped, even with overwrite enabled.
+Empty values and whitespace are preserved.
+
+### Preview an update to selected resources
+
+1. On **Resources**, select the resources you want to tag. Use Ctrl or Shift to select more than one.
+2. Leave **Dry run** selected. Select **Overwrite** only if you intend to replace existing values.
+3. Select **Preview Tag**, enter a tag name and value, then select **Preview**.
+4. Review the proposed changes. Results appear on **Apply Tags**.
+
+The dry run and overwrite settings on **Resources** are separate from those on
+**Apply Tags**.
+
+## Remove tags
+
+1. On **Remove Tags**, select or enter a tag name.
+2. Choose whether to match an exact value, as described below.
+3. Choose all resource groups, all resources, or both within the scanned scope.
+4. Leave dry run selected, then select **Remove Tags**.
+5. Review the proposed removals before starting a live run.
+
+**Match exact value** is off by default. With it off, the selected key is eligible
+for removal regardless of its value. With it on, matching is case-sensitive and
+preserves whitespace. An empty input matches only an empty tag value.
+
+For example, `Production` and `production` aren't the same value. Tag names are
+still matched without regard to case.
+
+**Refresh List** rebuilds the tag-name list from the saved scan. It doesn't query
+Azure again. You can also enter a tag name manually.
+
+## Run a live operation
+
+The preview is the confirmation step, not a promise that Azure has changed.
+
+1. Close the dry run preview.
+2. Clear the dry run checkbox for the operation you want to run.
+3. Start the operation again and review the new preview. Confirm only if the scope and proposed changes are right.
+4. Read the results, then scan again before another write or export.
+
+The app binds each scan to its cloud, tenant, subscription, account, and resource
+group. Changing the connection or scope clears the old scan. During an operation,
+controls that could change the scope or start conflicting work are disabled.
+Wait for the operation to finish before closing the window.
+
+An approved live run clears the saved inventory, even if some changes couldn't
+be completed. Operation results stay visible.
+
+## Understand the results
+
+| Status | What it means | What to do |
+|--------|---------------|------------|
+| **Planned** | A change is in the preview. It hasn't been written. | Review it before confirming a live run. |
+| **Skipped** | No write is planned or performed for this tag under the selected options. | Read the detail, such as an unchanged value, a value mismatch, or overwrite being off. |
+| **Success** | The app wrote the change and read it back to verify the result. | Review the result and scan again before continuing. |
+| **Conflict** | An affected tag or the target's eligibility changed after preview. No write was attempted for that target. | Scan again and review a new preview. |
+| **Error** | Planning or validation failed before a write started. | Read the error and correct the cause. |
+| **Unverified** | A write failed or timed out, or the app couldn't confirm the result. | Inspect the resource and scan again before retrying. |
+
+**Unverified doesn't mean nothing changed.** The app doesn't automatically retry
+an uncertain write.
+
+## Export a report
+
+After a successful scan, select **Export to CSV** and choose a file location.
+The report includes the scanned resource groups and resources, their locations,
+resource types, tag counts, and tag text.
+
+Formula-like text cells get a visible `[text] ` prefix. This includes formula
+markers hidden behind whitespace or control characters, and full-width variants.
+The prefix is an export-only safety measure; it doesn't change the inventory or
+your Azure tags.
+
+Leave that prefix in place when viewing or saving the report in a spreadsheet.
+Removing it can turn metadata into an active formula. Treat the CSV as a report,
+not a file for importing unchanged tag data back into Azure.
+
+Review reports before sharing them. Resource names and tag values can contain
+sensitive information.
+
+## Know the limits
+
+- **Scans can lag behind Azure.** Resource Graph is eventually consistent. New resources and recent tag changes might not appear immediately.
+- **Previews refresh known targets only.** Fresh ARM reads update tag information for resources already in the scan. They don't discover additional resources.
+- **Conflict checks aren't a lock.** The app checks affected tags before writing, but another tool can still change them between that read and the update. Azure tag updates aren't atomic compare-and-swap operations.
+- **Azure still enforces its rules.** Permissions, resource locks, policy, supported resource types, and tag limits can prevent changes.
+- **Reads can pause the UI.** Inventory and planning reads aren't fully asynchronous. This release doesn't provide a cancellation workflow.
+- **Tests aren't production approval.** Validate the tool in an approved test subscription before using it in production.
+
+## Troubleshoot common problems
+
+| Problem | What to check |
+|---------|---------------|
+| The app reports a missing module. | Install the required module in the same PowerShell environment you use to launch the app. Windows PowerShell and PowerShell 7 can use different module paths. |
+| The WPF window won't open. | Use Windows and launch PowerShell with `-STA`. |
+| Apply or export is disabled. | Connect and complete a new scan. Scope changes and approved live runs clear the previous inventory. |
+| Recent tags aren't in the scan. | Allow time for Resource Graph to update, then scan again. Previews read current tags for known targets. |
+| A write is denied. | Check the error details, target-scope permissions, resource locks, and Azure Policy. |
+| A result is **Conflict** or **Unverified**. | Inspect the resource and scan again. Don't assume a retry is safe. |
+
+If Windows marks downloaded files as blocked, review the source and files first.
+Then, from this repository folder, unblock only the project files you trust:
+
+```powershell
+Get-ChildItem -Path . -Recurse -File -Include *.ps1, *.psm1, *.xaml | Unblock-File
+```
+
+Unblocking doesn't override an execution policy that requires signed scripts.
+Follow your organization's [PowerShell execution policy](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_execution_policies)
+rather than bypassing it.
+
+## Run the tests
+
+Run the suite on Windows in both Windows PowerShell 5.1 and PowerShell 7. Start
+an STA session with `powershell -NoProfile -STA` or `pwsh -NoProfile -STA`, then
+change to the repository folder.
+
+If Pester 5.7.1 isn't installed in that environment, install it:
 
 ```powershell
 Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser
-Import-Module Pester -RequiredVersion 5.7.1 -ErrorAction Stop
-Invoke-Pester -Path .\tests -Output Detailed -CI
 ```
 
-Run the suite in both Windows PowerShell 5.1 and PowerShell 7 (`pwsh -STA`).
-Tests cover scope isolation, filters, exact value matching, delta payloads,
-previews, dry runs, conflicts, verification, CSV formula neutralization, UI event wiring, and background
-worker errors/timeouts. WPF windows are instantiated without displaying them.
-Azure boundaries are stubbed: these tests do not authenticate or modify Azure
-resources and do not replace a live smoke test in an approved test subscription.
+Import that version explicitly and run the tests:
 
----
+```powershell
+Import-Module Pester -RequiredVersion 5.7.1 -ErrorAction Stop
+Invoke-Pester -Path .\tests -Output Detailed
+```
+
+Version 1.3.0 passed all 102 tests on Windows PowerShell 5.1 and PowerShell 7.6.6.
+Coverage includes scope checks, filters, tag planning, dry runs, conflicts, write
+verification, CSV formula protection, UI events, and background worker failures.
+
+The tests create WPF windows without displaying them and replace Azure calls
+with test doubles. They don't sign in to Azure or change resources. They aren't
+a live Azure integration test or a comprehensive dependency vulnerability audit.
+
+## File structure
+
+| File | Purpose |
+|------|---------|
+| [Start-ResourceTagger.ps1](Start-ResourceTagger.ps1) | Starts the app and connects the UI to Azure operations |
+| [ResourceTagger.Core.psm1](ResourceTagger.Core.psm1) | Handles scope checks, filters, tag plans, verified writes, and CSV protection |
+| [MainWindow.xaml](gui/MainWindow.xaml) | Defines the main window |
+| [TagPreview.xaml](gui/TagPreview.xaml) | Defines the shared preview and confirmation dialog |
+| [Core tests](tests/ResourceTagger.Core.Tests.ps1) | Tests tagging logic and CSV protection |
+| [UI tests](tests/ResourceTagger.UI.Tests.ps1) | Tests UI events and isolated background workers |
+| [Changelog](CHANGELOG.md) | Records release changes |
 
 ## Author
 
-**Zac Larsen** — Personal project (not an official Microsoft product)
+**Zac Larsen**. This is a personal project, not an official Microsoft product.
 
----
+## Support and responsible use
 
-## Support & Responsible Use
+Issues and pull requests are welcome. Include the steps to reproduce a problem,
+your PowerShell and Azure module versions, and the error text. Remove tenant and
+subscription IDs, credentials, internal URLs, and other confidential information
+before posting. Keep secrets out of tag values, too.
 
-This tool queries only public Azure APIs (Resource Graph, ARM Tags) against **your own Azure subscriptions**. It reads resource metadata (such as subscription IDs/names, resource groups, resource types, and tags) and writes results locally (console output and CSV exports); it does **not** transmit this data off your machine except as required to call Azure APIs.
+The app uses Azure sign-in and management APIs to work with resources your
+account can access. It displays results locally and can save a CSV report. It
+doesn't send inventories to a separate reporting service.
 
-- **Issues & PRs:** Welcome! Please do not include subscription IDs, tenant IDs, internal URLs, or any confidential information.
-- **Azure support:** For Azure platform issues or outages, contact [Azure Support](https://azure.microsoft.com/support/) — not this repository.
-- **Exported files:** Review CSV exports before sharing externally — they may contain subscription IDs, resource names, and tag values for your environment.
+For Azure platform issues or outages, contact [Azure Support](https://azure.microsoft.com/support/).
+Use this repository for issues with the tool itself.
 
-This project may access or process Resource Graph, ARM Tags, Subscription, and Resource Group metadata through Azure APIs.
+## License and disclaimer
 
-Execution of this tool may initiate:
+This project is licensed under the [MIT license](LICENSE). It contains sample
+tooling developed by a Microsoft employee for informational and educational use.
 
-- Resource discovery
-- Tag inventory and gap analysis
-- Tag application (merge) to resource groups and resources
-- Tag removal (delete) from resource groups and resources
+**This isn't an official Microsoft product, service, or supported offering.**
 
-Ensure that least-privilege access is used when running this utility.
+The project is provided **as is**, without express or implied warranties. It
+doesn't guarantee production readiness, security hardening, tenant compatibility,
+governance alignment, successful tag updates, or policy compliance.
 
----
+Microsoft support agreements, Premier or Unified Support plans, and Azure support
+contracts don't cover this project. No Microsoft service-level agreements,
+warranties, or product commitments apply to the project or its derivatives.
 
-## OSS Project Disclaimer
-
-This repository contains sample tooling developed by a Microsoft employee and is provided for informational and educational purposes only.
-
-**This is not an official Microsoft product, service, or supported offering.**
-
-This project is provided "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO:
-
-- Production readiness
-- Security hardening
-- Tenant compatibility
-- Governance alignment
-- Tag application outcome guarantees
-- Policy compliance assurance
-
-Microsoft does not provide support for this project under any Microsoft support agreement, Premier/Unified Support plan, or Azure support contract.
-
-No Microsoft service level agreements (SLAs), warranties, or product commitments apply to this repository or any derivative use of its contents.
-
-Execution of this tool within an Azure tenant may result in tag modifications to resource groups and resources depending on permissions granted.
-
-Users are solely responsible for validating all scripts and automation prior to execution in production environments.
+Live operations can change Azure tags within the permissions you've granted.
+You're responsible for validating the tool and its changes before using it in
+production.

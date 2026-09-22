@@ -1,73 +1,88 @@
 # Changelog
 
-All notable changes to the Azure Resource Tagger will be documented in this file.
+Notable changes to Azure Resource Tagger. For setup, current behavior, and safety
+guidance, see the [README](README.md).
+
+## Unreleased
+
+### Changed
+
+- Reworked the README around setup, scanning, previews, live operations, and troubleshooting.
+- Applied the Microsoft Writing Style Guide with direct, conversational wording and consistent UI references.
+- Clarified result statuses, CSV protections, test coverage, and the limits of automated validation.
 
 ## [1.3.0] - 2026-09-21
 
 ### Added
-- Shared, testable tagging core and before/after preview for bulk apply, selected RGs, individual resources, and removal
-- Default-on dry run for individual-resource tagging
-- Scan identity display and explicit cloud, tenant, account, subscription, and RG scope validation
-- Case-sensitive exact-value removal option, including empty values and whitespace
-- Pre-write conflict checks, post-write verification, and explicit unverified outcomes
-- Pester regression tests covering the core, WPF event wiring, and isolated background write workers
+
+- A shared tagging core and before-and-after preview for bulk updates, selected resource groups, individual resources, and tag removal.
+- Dry run enabled by default for individual-resource tagging.
+- A scan identity display and checks for the selected cloud, tenant, account, subscription, and resource group.
+- Case-sensitive, exact-value matching for tag removal, including empty values and whitespace.
+- Conflict checks before writes, verification after writes, and an **Unverified** status when the result is uncertain.
+- Pester regression tests for tagging logic, WPF events, and isolated background workers.
 
 ### Fixed
-- Connection/scope changes invalidate cached scans; stale targets cannot be approved through a warning
-- All Azure reads/writes use captured contexts, including background workers
-- Merge payloads contain only intended changes rather than resending unrelated tags
-- Previews reflect actual skips and read errors instead of reporting requested tags as successful changes
-- Filters restore the full inventory locally and react to required-tag and missing-tag name edits
-- Required-tag parsing handles zero/one/multiple names and case-insensitive duplicates
-- Live operations invalidate scan data before subsequent writes/exports, while preserving operation results
-- Shared busy-state gating prevents overlapping operations and closing the window during active work
+
+- Connection and scope changes now clear the saved scan. Users can no longer approve outdated targets by accepting a warning.
+- Azure reads and writes now use the captured context, including writes from background workers.
+- Merge requests now send only intended changes, not unrelated existing tags.
+- Previews now show skipped tags and read errors instead of presenting requested changes as successful writes.
+- Filters now restore the full scanned inventory and respond to edits to required-tag and missing-tag names.
+- Required-tag parsing now handles empty lists, single names, multiple names, and case-insensitive duplicates.
+- Approved live runs now clear scan data before another write or export, while keeping operation results visible.
+- The app now blocks overlapping operations and prevents the window from closing while work is active.
 
 ### Changed
-- Renamed coverage labels to clarify any-tag coverage and RG-only key counts
-- Clarified that the missing-tag bulk scope uses the first queued tag
-- Corrected Azure Policy remediation guidance and documented concurrency, consistency, and testing limits
+
+- Renamed coverage labels to distinguish resources with any tag from required-tag compliance, and to identify resource-group-only key counts.
+- Clarified that the missing-tag bulk scope checks the first queued tag.
+- Corrected Azure Policy remediation guidance and documented concurrency, scan freshness, and testing limits.
 
 ### Security
-- Neutralized spreadsheet-formula injection in every exported text column using a visible `[text] ` prefix, without changing inventory or Azure tag data
-- Added regression coverage for formula markers, leading control characters, CSV quoting, and the actual export event
+
+- Added a visible `[text] ` prefix to formula-like cells in every exported text column. This protects spreadsheet viewing without changing the inventory or Azure tags.
+- Added regression tests for formula markers, leading control characters, CSV quoting, and the actual export event.
 
 ## [1.2.0] - 2026-04-27
 
 ### Added
-- **Selected Resource Groups** scope in Apply Tags tab -- opens a multi-select picker dialog so you can choose exactly which RGs receive tags (Ctrl+click, Shift+click, Select All / Select None)
-- ARM Tags API (`Get-AzTag`) discovery for Remove Tags dropdown -- catches tag keys on resource types that Azure Resource Graph doesn't index, matching what the Azure Portal Tags blade shows
+
+- A **Selected Resource Groups** scope on **Apply Tags**, with multiple selection and **Select All** and **Select None** controls.
+- ARM Tags API (`Get-AzTag`) discovery for the **Remove Tags** list, including tag keys on resource types that Azure Resource Graph doesn't index.
 
 ## [1.1.1] - 2026-04-23
 
 ### Fixed
-- Remove Tags dropdown now auto-populates when scan completes (no longer requires manual Refresh click)
+
+- The **Remove Tags** list now populates when a scan completes, without a manual refresh.
 
 ## [1.1.0] - 2026-04-23
 
 ### Added
-- **Remove Tags** tab for bulk tag removal
-  - Dropdown populated from scan data with all discovered tag keys
-  - Optional value filter to remove only specific tag values
-  - Scope selection: all RGs, all resources, or both
-  - Dry run mode (on by default) with confirmation dialog for live operations
-  - Results grid with previous value column
-- Tag removal uses `Update-AzTag -Operation Delete` (surgical key removal, preserves other tags)
+
+- A **Remove Tags** tab for bulk removal:
+  - A tag-name list populated from scan data.
+  - An optional value filter.
+  - Scope selection for resource groups, resources, or both.
+  - Dry run enabled by default, with confirmation before live operations.
+  - A results grid that shows previous values.
+- Tag removal through `Update-AzTag -Operation Delete`, which preserves unrelated tags.
 
 ## [1.0.0] - 2026-04-23
 
 ### Added
-- Initial release
-- WPF GUI with Azure blue theme matching the FinOps Multitool
-- **Commercial** and **Gov** tenant connection buttons
-- Tag inventory scan via Azure Resource Graph (resource groups + resources)
-- Summary dashboard cards (RG count, resource count, tag coverage %, untagged RGs, unique tag keys)
-- Tag key summary grid with per-key coverage across resource groups
-- Resource Groups tab with missing-tag analysis against configurable required-tag list
-- Resources tab with filter by untagged or missing specific tag
-- Apply Tags tab with tag queue, target scope selection, overwrite toggle, and dry-run mode
-- Bulk tag application using `Update-AzTag -Operation Merge`
-- Confirmation dialog before live operations
-- CSV export of full tag inventory
-- Placeholder text on required tags input field
-- PowerShell 5.1 compatibility (UTF-8 BOM, `IDictionary` tag parsing, `@()` array wrapping)
-- MIT license and OSS disclaimer
+
+- The initial WPF interface, with an Azure blue theme matching the FinOps Multitool.
+- **Commercial** and **Gov** tenant connection buttons.
+- Resource group and resource tag scans through Azure Resource Graph.
+- Summary cards for resource counts, tag coverage, untagged resource groups, and unique tag keys.
+- A tag-key summary with coverage across resource groups.
+- A **Resource Groups** tab with a configurable required-tag list.
+- A **Resources** tab with filters for untagged resources or a missing tag.
+- An **Apply Tags** tab with a tag queue, target scope, overwrite setting, and dry run.
+- Bulk updates through `Update-AzTag -Operation Merge`, with confirmation before live operations.
+- CSV export of the scanned tag inventory.
+- Placeholder text for the required-tag input.
+- Windows PowerShell 5.1 compatibility, including UTF-8 BOM encoding, `IDictionary` tag parsing, and array handling.
+- The MIT license and personal-project disclaimer.
