@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Azure Resource Tagger - Scan existing tags and bulk-apply new tags to Azure resources.
 
@@ -9,7 +9,7 @@
     preparing a subscription for Azure Policy tag enforcement.
 
 .NOTES
-    Version : 1.2.2
+    Version : 1.3.0
     Author  : Zac Larsen
     Requires: Az.Accounts, Az.Resources, Az.ResourceGraph
 #>
@@ -24,7 +24,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:ScriptRoot = $PSScriptRoot
-$script:Version    = '1.2.2'
+$script:Version    = '1.3.0'
+Import-Module (Join-Path $script:ScriptRoot 'ResourceTagger.Core.psm1') -Force
 
 # ─────────────────────────────────────────────────────────────────
 # WPF bootstrap
@@ -55,9 +56,10 @@ if (-not (Test-Path $xamlPath)) {
     return
 }
 
-[xml]$xaml = Get-Content $xamlPath -Raw
+[xml]$xaml = Get-Content $xamlPath -Raw -Encoding UTF8
 $reader   = New-Object System.Xml.XmlNodeReader $xaml
 $window   = [Windows.Markup.XamlReader]::Load($reader)
+$reader.Dispose()
 
 # ─────────────────────────────────────────────────────────────────
 # Resolve named controls
@@ -65,17 +67,17 @@ $window   = [Windows.Markup.XamlReader]::Load($reader)
 $controlNames = @(
     'VersionLabel','TenantLabel',
     'CommercialButton','GovButton','ScanButton','ExportButton',
-    'ScopeLevel','SubscriptionSelector','RGSelector',
+    'ScopeLevel','SubscriptionSelector','RGSelector','ScanScopeText',
     'RGCountText','ResourceCountText','TagCoverageText','UntaggedRGText','UniqueTagsText',
     'TagSummaryGrid',
     'RGFilterTag','RequiredTagsInput','RequiredTagsPlaceholder','RGGrid',
     'ResFilterTag','ResFilterTagName','ResourceGrid',
-    'ResTagSelectedButton','ResOverwriteCheck','ResTagStatusText',
+    'ResTagSelectedButton','ResOverwriteCheck','ResDryRunCheck','ResTagStatusText',
     'ApplyTagName','ApplyTagValue','AddTagButton',
     'TagQueueGrid','ClearTagsButton','RemoveTagButton',
     'ApplyScope','OverwriteCheck','DryRunCheck',
     'ApplyTagsButton','ApplyStatusText','ApplyResultsGrid',
-    'RemoveTagSelector','RemoveTagValueFilter','RemoveTagValuePlaceholder',
+    'RemoveTagSelector','RemoveTagValueFilter','RemoveTagValuePlaceholder','RemoveMatchValueCheck',
     'RefreshTagListButton','RemoveScope','RemoveDryRunCheck',
     'RemoveTagsButton','RemoveStatusText','RemoveResultsGrid',
     'ProgressBar','StatusText','MainTabs'
@@ -84,7 +86,8 @@ $controlNames = @(
 $ui = @{}
 foreach ($name in $controlNames) {
     $ctrl = $window.FindName($name)
-    if ($ctrl) { $ui[$name] = $ctrl }
+    if (-not $ctrl) { throw "Required UI control '$name' was not found." }
+    $ui[$name] = $ctrl
 }
 
 $ui.VersionLabel.Text = "v$($script:Version)"
@@ -97,9 +100,11 @@ $script:Environment     = ''
 $script:Subscriptions   = @()
 $script:AllRGs          = @()
 $script:AllResources    = @()
-$script:LastScanSubIdx  = -1
-$script:LastScanScope   = -1
-$script:LastScanRG      = ''
+$script:ActiveContext   = $null
+$script:ScanScope       = $null
+$script:ScanContext     = $null
+$script:ScannedAt       = $null
+$script:Busy            = $false
 $script:Scanning        = $false
 $script:TagQueue        = [System.Collections.ObjectModel.ObservableCollection[PSObject]]::new()
 $ui.TagQueueGrid.ItemsSource = $script:TagQueue
@@ -136,30 +141,101 @@ function Update-Status {
     Flush-UI
 }
 
-# ─────────────────────────────────────────────────────────────────
-# Helper: Convert tag object (hashtable, OrderedDictionary,
-#         PSCustomObject, etc.) to a plain hashtable
-# ─────────────────────────────────────────────────────────────────
-function ConvertTo-TagHashtable {
-    param($Tags)
-    $map = @{}
-    if ($null -eq $Tags) { return $map }
-    if ($Tags -is [System.Collections.IDictionary]) {
-        foreach ($k in $Tags.Keys) { $map[$k] = $Tags[$k] }
-    } elseif ($Tags -is [PSCustomObject]) {
-        $Tags.PSObject.Properties | ForEach-Object { $map[$_.Name] = $_.Value }
-    } else {
-        try { $Tags.PSObject.Properties | ForEach-Object { $map[$_.Name] = $_.Value } } catch {}
-    }
-    return $map
+function Show-TaggerError {
+    param([string]$Message, [string]$Title = 'Error')
+    [System.Windows.MessageBox]::Show($window, $Message, $Title, 'OK', 'Error') | Out-Null
 }
 
-# Helper: Safely get the tags property from a Resource Graph object
-function Get-SafeTags {
-    param($Obj)
-    if ($null -eq $Obj) { return $null }
-    if ($Obj.PSObject.Properties.Match('tags').Count -gt 0) { return $Obj.tags }
-    return $null
+# ─────────────────────────────────────────────────────────────────
+# Scope and operation state
+# ─────────────────────────────────────────────────────────────────
+function Update-ControlState {
+    $idle = -not $script:Busy
+    $connected = $script:Connected -and $null -ne $script:ActiveContext
+    $hasScan = $null -ne $script:ScanScope
+    foreach ($name in @(
+        'CommercialButton','GovButton','ScopeLevel','RGFilterTag','RequiredTagsInput',
+        'ResFilterTag','ResourceGrid','ApplyTagName','ApplyTagValue','AddTagButton','TagQueueGrid',
+        'ClearTagsButton','RemoveTagButton','ApplyScope','OverwriteCheck','DryRunCheck',
+        'ResOverwriteCheck','ResDryRunCheck','RemoveTagSelector','RemoveMatchValueCheck',
+        'RemoveScope','RemoveDryRunCheck'
+    )) {
+        $ui[$name].IsEnabled = $idle
+    }
+    $ui.SubscriptionSelector.IsEnabled = $idle -and $connected
+    $ui.ScanButton.IsEnabled = $idle -and $connected -and $ui.SubscriptionSelector.SelectedIndex -ge 0
+    $ui.RGSelector.IsEnabled = $idle -and $connected -and $ui.ScopeLevel.SelectedIndex -eq 1
+    $ui.ResFilterTagName.IsEnabled = $idle -and $ui.ResFilterTag.SelectedIndex -eq 2
+    $ui.RemoveTagValueFilter.IsEnabled = $idle -and $ui.RemoveMatchValueCheck.IsChecked
+    $ui.RefreshTagListButton.IsEnabled = $idle -and $hasScan
+    $ui.ExportButton.IsEnabled = $idle -and $hasScan
+    $ui.ApplyTagsButton.IsEnabled = $idle -and $hasScan
+    $ui.RemoveTagsButton.IsEnabled = $idle -and $hasScan
+    $ui.ResTagSelectedButton.IsEnabled = $idle -and $hasScan -and $ui.ResourceGrid.SelectedItems.Count -gt 0
+}
+
+function Set-TaggerBusy {
+    param([bool]$Busy)
+    $script:Busy = $Busy
+    Update-ControlState
+}
+
+function Clear-TagScan {
+    param([string]$Reason = 'Scan the selected scope before making changes.')
+    $script:ScanScope = $null
+    $script:ScanContext = $null
+    $script:ScannedAt = $null
+    $script:AllRGs = @()
+    $script:AllResources = @()
+    foreach ($name in @('TagSummaryGrid','RGGrid','ResourceGrid')) { $ui[$name].ItemsSource = $null }
+    foreach ($name in @('RGCountText','ResourceCountText','TagCoverageText','UntaggedRGText','UniqueTagsText')) {
+        $ui[$name].Text = '-'
+    }
+    $ui.RemoveTagSelector.Items.Clear()
+    $ui.RemoveTagSelector.Text = ''
+    $ui.ScanScopeText.Text = $Reason
+    Update-ControlState
+}
+
+function Get-CurrentTagScope {
+    $index = $ui.SubscriptionSelector.SelectedIndex
+    if (-not $script:Connected -or $null -eq $script:ActiveContext -or $index -lt 0) {
+        throw 'Connect and select a subscription before scanning.'
+    }
+    if ($script:ActiveContext.Subscription.Id -ne $script:Subscriptions[$index].Id) {
+        throw 'The Azure context does not match the selected subscription. Reconnect and re-scan.'
+    }
+    $group = if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -gt 0) {
+        $ui.RGSelector.SelectedItem.ToString()
+    } else { '' }
+    return New-TagScope -Context $script:ActiveContext -ResourceGroup $group
+}
+
+function Update-ResourceGroupView {
+    $required = @(Get-RequiredTagName -Text $ui.RequiredTagsInput.Text)
+    $ui.RGGrid.ItemsSource = @(Get-ResourceGroupRow -Resources $script:AllRGs -RequiredTags $required `
+        -OnlyMissing:($ui.RGFilterTag.SelectedIndex -eq 1))
+}
+
+function Update-ResourceView {
+    $filter = @('All','Untagged','MissingTag')[$ui.ResFilterTag.SelectedIndex]
+    $ui.ResourceGrid.ItemsSource = @(Get-ResourceRow -Resources $script:AllResources -Filter $filter `
+        -TagName $ui.ResFilterTagName.Text.Trim())
+    if ($filter -eq 'MissingTag' -and [string]::IsNullOrWhiteSpace($ui.ResFilterTagName.Text)) {
+        $ui.ResTagStatusText.Text = 'Enter a tag name to filter.'
+    }
+}
+
+function Update-RemoveTagList {
+    $tagKeys = @{}
+    foreach ($resource in @($script:AllRGs) + @($script:AllResources)) {
+        $tags = ConvertTo-TagHashtable (Get-SafeTags $resource)
+        foreach ($key in $tags.Keys) { $tagKeys[$key] = $true }
+    }
+    $ui.RemoveTagSelector.Items.Clear()
+    foreach ($key in ($tagKeys.Keys | Sort-Object)) { [void]$ui.RemoveTagSelector.Items.Add($key) }
+    if ($ui.RemoveTagSelector.Items.Count -gt 0) { $ui.RemoveTagSelector.SelectedIndex = 0 }
+    Update-ControlState
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -169,38 +245,36 @@ function Get-SafeTags {
 # Run Update-AzTag in a background runspace so the UI stays
 # responsive during bulk live tag operations.
 # ─────────────────────────────────────────────────────────────────
+function New-TagWriteRunspace {
+    return [runspacefactory]::CreateRunspace()
+}
+
 function Invoke-AzTagUpdateSafe {
     param(
         [string]$ResourceId,
         [hashtable]$Tag,
-        [string]$Operation = 'Delete',
+        [ValidateSet('Merge','Delete')][string]$Operation = 'Delete',
+        [Parameter(Mandatory)]$DefaultProfile,
         [int]$TimeoutSeconds = 60
     )
-    $rs = [runspacefactory]::CreateRunspace()
-    $rs.Open()
+    $rs = New-TagWriteRunspace
     $ps = [powershell]::Create()
-    $ps.Runspace = $rs
-    [void]$ps.AddScript({
-        param($rid, $tag, $op)
-        Update-AzTag -ResourceId $rid -Tag $tag -Operation $op -ErrorAction Stop | Out-Null
-    }).AddArgument($ResourceId).AddArgument($Tag).AddArgument($Operation)
-
-    $asyncResult = $ps.BeginInvoke()
-    $deadline    = (Get-Date).AddSeconds($TimeoutSeconds)
-
-    while (-not $asyncResult.IsCompleted -and (Get-Date) -lt $deadline) {
-        $frame = [System.Windows.Threading.DispatcherFrame]::new()
-        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
-            [System.Windows.Threading.DispatcherPriority]::Background,
-            [action]{ $frame.Continue = $false }
-        )
-        [System.Windows.Threading.Dispatcher]::PushFrame($frame)
-        Start-Sleep -Milliseconds 100
-    }
-
     try {
+        $rs.Open()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript({
+            param($rid, $tag, $op, $azureProfile)
+            Update-AzTag -ResourceId $rid -Tag $tag -Operation $op -DefaultProfile $azureProfile -ErrorAction Stop | Out-Null
+        }).AddArgument($ResourceId).AddArgument($Tag).AddArgument($Operation).AddArgument($DefaultProfile)
+
+        $asyncResult = $ps.BeginInvoke()
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while (-not $asyncResult.IsCompleted -and (Get-Date) -lt $deadline) {
+            Flush-UI
+            Start-Sleep -Milliseconds 100
+        }
         if ($asyncResult.IsCompleted) {
-            $ps.EndInvoke($asyncResult)
+            $ps.EndInvoke($asyncResult) | Out-Null
             if ($ps.Streams.Error.Count -gt 0) { throw $ps.Streams.Error[0].Exception }
         } else {
             $ps.Stop()
@@ -208,14 +282,15 @@ function Invoke-AzTagUpdateSafe {
         }
     } finally {
         $ps.Dispose()
-        $rs.Close()
+        $rs.Dispose()
     }
 }
 
 function Search-AzGraphSafe {
     param(
         [string]$Query,
-        [string[]]$Subscriptions
+        [string[]]$Subscriptions,
+        [Parameter(Mandatory)]$DefaultProfile
     )
     $all   = [System.Collections.Generic.List[object]]::new()
     $skip  = $null
@@ -226,6 +301,8 @@ function Search-AzGraphSafe {
             Query        = $Query
             Subscription = $Subscriptions
             First        = $first
+            DefaultProfile = $DefaultProfile
+            ErrorAction  = 'Stop'
         }
         if ($skip) { $params['SkipToken'] = $skip }
 
@@ -233,6 +310,7 @@ function Search-AzGraphSafe {
         $result = Search-AzGraph @params
         Flush-UI
 
+        if ($null -eq $result) { break }
         # Newer Az.ResourceGraph returns PSResourceGraphResponse with .Data
         # Older versions return the array of rows directly
         $hasData = $result.PSObject.Properties.Match('Data').Count -gt 0
@@ -253,7 +331,113 @@ function Search-AzGraphSafe {
         $skip = if ($hasSkip) { $result.SkipToken } else { $null }
     } while ($skip)
 
-    return $all
+    return $all.ToArray()
+}
+
+# ─────────────────────────────────────────────────────────────────
+# Shared preview and execution for every tagging entry point
+# ─────────────────────────────────────────────────────────────────
+function New-TagPreviewWindow {
+    param([object[]]$Plan, $Scope, [bool]$DryRun)
+    [xml]$previewXaml = Get-Content (Join-Path $script:ScriptRoot 'gui\TagPreview.xaml') -Raw -Encoding UTF8
+    $previewReader = [System.Xml.XmlNodeReader]::new($previewXaml)
+    try { $dialog = [Windows.Markup.XamlReader]::Load($previewReader) }
+    finally { $previewReader.Dispose() }
+    $dialog.Owner = $window
+    $mode = if ($DryRun) { 'DRY RUN - no changes will be written' } else { 'LIVE - review before applying' }
+    $group = if ($Scope.ResourceGroup) { $Scope.ResourceGroup } else { '(all resource groups)' }
+    $dialog.FindName('ModeText').Text = $mode
+    $dialog.FindName('ScopeText').Text = "$($Scope.Environment) | Tenant: $($Scope.TenantId)`nSubscription: $($Scope.SubscriptionId) | RG: $group`nAccount: $($Scope.AccountId) | Scanned: $($script:ScannedAt.ToString('u'))"
+    $rows = @(Get-TagPlanRow -Plan $Plan)
+    $dialog.FindName('PlanGrid').ItemsSource = $rows
+    $changes = @($rows | Where-Object { $_.Status -eq 'Planned' }).Count
+    $skipped = @($rows | Where-Object { $_.Status -eq 'Skipped' }).Count
+    $errors = @($Plan | Where-Object { $_.Status -eq 'Error' }).Count
+    $dialog.FindName('SummaryText').Text = "$changes tag change(s) planned, $skipped skipped across $($Plan.Count) target(s); $errors target(s) could not be read."
+    $apply = $dialog.FindName('ApplyButton')
+    $close = $dialog.FindName('CloseButton')
+    $apply.Content = "Apply $changes change(s)"
+    $apply.IsEnabled = -not $DryRun -and $changes -gt 0
+    if ($DryRun) { $apply.Visibility = 'Collapsed'; $close.Content = 'Close preview' }
+    $apply.Add_Click({ $dialog.DialogResult = $true }.GetNewClosure())
+    $close.Add_Click({ $dialog.DialogResult = $false }.GetNewClosure())
+    return $dialog
+}
+
+function Show-TagPlanPreview {
+    param([object[]]$Plan, $Scope, [bool]$DryRun)
+    $dialog = New-TagPreviewWindow -Plan $Plan -Scope $Scope -DryRun $DryRun
+    return $dialog.ShowDialog() -eq $true
+}
+
+function Invoke-TagWorkflow {
+    param(
+        [object[]]$Targets,
+        [hashtable]$Tags,
+        [ValidateSet('Merge','Delete')][string]$Operation = 'Merge',
+        [bool]$DryRun = $true,
+        [bool]$Overwrite = $false,
+        [bool]$MatchValue = $false,
+        [ValidateSet('All','Untagged','MissingTag')][string]$Selection = 'All',
+        [string]$SelectionTagName = '',
+        $ResultsGrid = $ui.ApplyResultsGrid,
+        $StatusControl = $ui.ApplyStatusText
+    )
+    if ($script:Busy) { return }
+    $writeAttempted = $false
+    try {
+        Assert-TagScope -Expected $script:ScanScope -Actual (Get-CurrentTagScope)
+        $scope = $script:ScanScope
+        $azureProfile = $script:ScanContext
+        Set-TaggerBusy $true
+        $targetsToPlan = @($Targets | Sort-Object Id -Unique)
+        if ($targetsToPlan.Count -eq 0) {
+            [System.Windows.MessageBox]::Show('There are no targets in this scan or selection.', 'No Targets', 'OK', 'Information') | Out-Null
+            return
+        }
+        $plan = @(Get-TagOperationPlan -Targets $targetsToPlan -Scope $scope -DefaultProfile $azureProfile `
+            -Tags $Tags -Operation $Operation -Overwrite:$Overwrite -MatchValue:$MatchValue `
+            -Selection $Selection -SelectionTagName $SelectionTagName -OnProgress {
+                param($done, $total, $name)
+                Update-Status "Reading current tags $done / $total - $name" ([math]::Round(100 * $done / $total))
+            })
+        $ResultsGrid.ItemsSource = @(Get-TagPlanRow -Plan $plan)
+        $approved = Show-TagPlanPreview -Plan $plan -Scope $scope -DryRun $DryRun
+        if ($DryRun -or -not $approved) {
+            $planned = @($plan | Where-Object Status -eq Planned).Count
+            $skipped = @($plan | Where-Object Status -eq Skipped).Count
+            $errors = @($plan | Where-Object Status -eq Error).Count
+            $StatusControl.Text = "No writes - $planned targets planned, $skipped skipped, $errors errors."
+            Update-Status 'Preview closed. No changes written.' 100
+            return
+        }
+
+        Assert-TagScope -Expected $scope -Actual (Get-CurrentTagScope)
+        $writeAttempted = $true
+        $results = @(Invoke-TagOperationPlan -Plan $plan -Scope $scope -DefaultProfile $azureProfile -Confirm:$false `
+            -UpdateAction {
+                param($id, $delta, $operation, $context)
+                Invoke-AzTagUpdateSafe -ResourceId $id -Tag $delta -Operation $operation -DefaultProfile $context
+            } -OnProgress {
+                param($done, $total, $name)
+                Update-Status "Validating and applying $done / $total - $name" ([math]::Round(100 * $done / $total))
+            })
+        $ResultsGrid.ItemsSource = @(Get-TagPlanRow -Plan $results)
+        $success = @($results | Where-Object Status -eq Success).Count
+        $skipped = @($results | Where-Object Status -eq Skipped).Count
+        $conflicts = @($results | Where-Object Status -eq Conflict).Count
+        $errors = @($results | Where-Object { $_.Status -in 'Error','Unverified' }).Count
+        $StatusControl.Text = "$success verified, $skipped skipped, $conflicts conflicts, $errors errors/unverified. Re-scan before continuing."
+        Update-Status $StatusControl.Text 100
+    } catch {
+        Clear-TagScan -Reason 'Operation stopped. Re-scan before continuing.'
+        $StatusControl.Text = "Operation stopped: $($_.Exception.Message)"
+        Update-Status $StatusControl.Text 0
+        Show-TaggerError -Message $StatusControl.Text -Title 'Tag Operation Error'
+    } finally {
+        if ($writeAttempted) { Clear-TagScan -Reason 'Tags may have changed. Re-scan before another operation or export.' }
+        Set-TaggerBusy $false
+    }
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -326,9 +510,17 @@ function Show-TenantPicker {
 function Connect-ToAzure {
     param([string]$AzureEnvironment)
 
-    $ui.CommercialButton.IsEnabled = $false
-    $ui.GovButton.IsEnabled        = $false
-    $ui.ScanButton.IsEnabled       = $false
+    if ($script:Busy) { return }
+    Set-TaggerBusy $true
+    $script:Connected = $false
+    $script:ActiveContext = $null
+    $script:Subscriptions = @()
+    Clear-TagScan -Reason 'Connection changed. Select a subscription and re-scan.'
+    $ui.SubscriptionSelector.Items.Clear()
+    $ui.RGSelector.Items.Clear()
+    $ui.TenantLabel.Text = ''
+    $ui.CommercialButton.Content = 'Commercial Tenant'
+    $ui.GovButton.Content = 'Gov Tenant'
 
     $envLabel = if ($AzureEnvironment -eq 'AzureUSGovernment') { 'Gov' } else { 'Commercial' }
     $btn      = if ($AzureEnvironment -eq 'AzureUSGovernment') { $ui.GovButton } else { $ui.CommercialButton }
@@ -340,21 +532,21 @@ function Connect-ToAzure {
         # Disable Az 12+ interactive subscription picker
         $env:AZURE_LOGIN_EXPERIENCE_V2 = 'Off'
 
-        $ctx = Get-AzContext -ErrorAction SilentlyContinue
+        $ctx = Get-AzContext -ErrorAction Stop
         if (-not $ctx -or $ctx.Environment.Name -ne $AzureEnvironment) {
             $window.WindowState = 'Minimized'
             try {
-                Connect-AzAccount -Environment $AzureEnvironment -ErrorAction Stop | Out-Null
+                Connect-AzAccount -Environment $AzureEnvironment -Scope Process -ErrorAction Stop | Out-Null
             } finally {
                 $window.WindowState = 'Normal'
-                $window.Activate()
+                [void]$window.Activate()
             }
-            $ctx = Get-AzContext
+            $ctx = Get-AzContext -ErrorAction Stop
         }
 
         # List accessible tenants and show picker
         Update-Status 'Loading accessible tenants...' 20
-        $tenants = @(Get-AzTenant -ErrorAction SilentlyContinue)
+        $tenants = @(Get-AzTenant -DefaultProfile $ctx -ErrorAction Stop)
 
         if ($tenants.Count -eq 0) {
             throw 'No accessible tenants found.'
@@ -364,8 +556,6 @@ function Connect-ToAzure {
         if (-not $selectedTenantId) {
             Update-Status 'Tenant selection cancelled.' 0
             $btn.Content = "$envLabel Tenant"
-            $ui.CommercialButton.IsEnabled = $true
-            $ui.GovButton.IsEnabled        = $true
             return
         }
 
@@ -374,34 +564,36 @@ function Connect-ToAzure {
             Update-Status "Switching to tenant $selectedTenantId..." 25
             $window.WindowState = 'Minimized'
             try {
-                Connect-AzAccount -Environment $AzureEnvironment -TenantId $selectedTenantId -ErrorAction Stop | Out-Null
+                Connect-AzAccount -Environment $AzureEnvironment -TenantId $selectedTenantId -Scope Process -ErrorAction Stop | Out-Null
             } finally {
                 $window.WindowState = 'Normal'
-                $window.Activate()
+                [void]$window.Activate()
             }
-            $ctx = Get-AzContext
+            $ctx = Get-AzContext -ErrorAction Stop
         }
 
+        if ($ctx.Environment.Name -ne $AzureEnvironment -or $ctx.Tenant.Id -ne $selectedTenantId) {
+            throw 'The connected Azure context does not match the selected cloud and tenant.'
+        }
         $tenantId = $ctx.Tenant.Id
+        $script:ActiveContext = $ctx
         $script:Environment = $AzureEnvironment
 
         Update-Status 'Listing subscriptions...' 30
 
-        $script:Subscriptions = @(Get-AzSubscription -TenantId $tenantId -ErrorAction Stop |
+        $script:Subscriptions = @(Get-AzSubscription -TenantId $tenantId -DefaultProfile $ctx -ErrorAction Stop |
             Where-Object { $_.State -eq 'Enabled' } | Sort-Object Name)
+        if ($script:Subscriptions.Count -eq 0) { throw 'No enabled subscriptions were found in this tenant.' }
 
         $ui.SubscriptionSelector.Items.Clear()
         foreach ($sub in $script:Subscriptions) {
             $item = "$($sub.Name)  ($($sub.Id))"
             $ui.SubscriptionSelector.Items.Add($item) | Out-Null
         }
-        if ($ui.SubscriptionSelector.Items.Count -gt 0) {
-            $ui.SubscriptionSelector.SelectedIndex = 0
-        }
+        $ui.SubscriptionSelector.SelectedIndex = 0
+        Select-TaggerSubscription
 
         $ui.TenantLabel.Text = "Tenant: $tenantId  |  $($ctx.Account.Id)  |  $AzureEnvironment"
-        $ui.SubscriptionSelector.IsEnabled = $true
-        $ui.ScanButton.IsEnabled  = $true
         $script:Connected = $true
 
         $btn.Content = "$($script:LockClosed) $envLabel Tenant"
@@ -409,15 +601,17 @@ function Connect-ToAzure {
         Update-Status "Connected to $envLabel - $subCount subscriptions found" 100
     }
     catch {
+        $script:Connected = $false
+        $script:ActiveContext = $null
+        $script:Subscriptions = @()
+        $ui.SubscriptionSelector.Items.Clear()
+        $ui.RGSelector.Items.Clear()
         Update-Status "Connection failed: $($_.Exception.Message)" 0
         $btn.Content = "$envLabel Tenant"
-        [System.Windows.MessageBox]::Show(
-            "Failed to connect:`n$($_.Exception.Message)",
-            'Connection Error', 'OK', 'Error') | Out-Null
+        Show-TaggerError -Message "Failed to connect:`n$($_.Exception.Message)" -Title 'Connection Error'
+    } finally {
+        Set-TaggerBusy $false
     }
-
-    $ui.CommercialButton.IsEnabled = $true
-    $ui.GovButton.IsEnabled        = $true
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -437,40 +631,58 @@ $ui.GovButton.Add_Click({
 # ─────────────────────────────────────────────────────────────────
 # Subscription selection → populate RGs
 # ─────────────────────────────────────────────────────────────────
-$ui.SubscriptionSelector.Add_SelectionChanged({
-    if ($script:Scanning) { return }
+function Select-TaggerSubscription {
     $idx = $ui.SubscriptionSelector.SelectedIndex
-    if ($idx -lt 0) { return }
+    if ($idx -lt 0 -or $null -eq $script:ActiveContext) { throw 'Select a connected subscription.' }
     $sub = $script:Subscriptions[$idx]
-    Set-AzContext -SubscriptionId $sub.Id -ErrorAction SilentlyContinue | Out-Null
+    Clear-TagScan -Reason 'Subscription changed. Re-scan before making changes.'
+    $script:ActiveContext = Set-AzContext -Subscription $sub.Id -Tenant $script:ActiveContext.Tenant.Id `
+        -DefaultProfile $script:ActiveContext -Scope Process -ErrorAction Stop
+    if ($script:ActiveContext.Subscription.Id -ne $sub.Id) { throw 'Azure did not select the requested subscription.' }
     Flush-UI
 
     $ui.RGSelector.Items.Clear()
     $ui.RGSelector.Items.Add('(All Resource Groups)') | Out-Null
-    try {
-        Flush-UI
-        $rgs = Get-AzResourceGroup | Sort-Object ResourceGroupName
-        Flush-UI
-        foreach ($rg in $rgs) {
-            $ui.RGSelector.Items.Add($rg.ResourceGroupName) | Out-Null
-        }
-    } catch {}
+    $rgs = @(Get-AzResourceGroup -DefaultProfile $script:ActiveContext -ErrorAction Stop | Sort-Object ResourceGroupName)
+    Flush-UI
+    foreach ($rg in $rgs) { $ui.RGSelector.Items.Add($rg.ResourceGroupName) | Out-Null }
     $ui.RGSelector.SelectedIndex = 0
-    $ui.RGSelector.IsEnabled = ($ui.ScopeLevel.SelectedIndex -eq 1)
+}
+
+$ui.SubscriptionSelector.Add_SelectionChanged({
+    if ($script:Busy) { return }
+    try {
+        Set-TaggerBusy $true
+        Select-TaggerSubscription
+        Update-Status 'Subscription selected. Scan to load the inventory.' 0
+    } catch {
+        $script:Connected = $false
+        $script:ActiveContext = $null
+        Clear-TagScan -Reason 'Subscription selection failed. Reconnect before scanning.'
+        Update-Status "Subscription selection failed: $($_.Exception.Message)" 0
+        Show-TaggerError -Message $_.Exception.Message -Title 'Subscription Error'
+    } finally {
+        Set-TaggerBusy $false
+    }
 })
 
 # ─────────────────────────────────────────────────────────────────
 # Scope level change → enable/disable RG selector
 # ─────────────────────────────────────────────────────────────────
 $ui.ScopeLevel.Add_SelectionChanged({
-    $ui.RGSelector.IsEnabled = ($ui.ScopeLevel.SelectedIndex -eq 1)
+    if ($script:Busy) { return }
+    Clear-TagScan -Reason 'Scope changed. Re-scan before making changes.'
+})
+$ui.RGSelector.Add_SelectionChanged({
+    if ($script:Busy) { return }
+    Clear-TagScan -Reason 'Resource-group selection changed. Re-scan before making changes.'
 })
 
 # ─────────────────────────────────────────────────────────────────
 # SCAN
 # ─────────────────────────────────────────────────────────────────
 $ui.ScanButton.Add_Click({
-    if ($script:Scanning) { return }
+    if ($script:Busy) { return }
     $subIdx = $ui.SubscriptionSelector.SelectedIndex
     if ($subIdx -lt 0) { return }
     $sub = $script:Subscriptions[$subIdx]
@@ -478,41 +690,23 @@ $ui.ScanButton.Add_Click({
 
     try {
         $script:Scanning = $true
-        $ui.ScanButton.IsEnabled = $false
-        $ui.ApplyTagsButton.IsEnabled = $false
-        $ui.ExportButton.IsEnabled = $false
-
-        # Disable scope controls during scan to prevent Flush-UI from
-        # triggering cascading SelectionChanged handlers
-        $ui.SubscriptionSelector.IsEnabled = $false
-        $ui.ScopeLevel.IsEnabled = $false
-        $ui.RGSelector.IsEnabled = $false
-
-        # Clear previous results so WPF isn't rendering stale data during scan
-        $ui.TagSummaryGrid.ItemsSource = $null
-        $ui.RGGrid.ItemsSource         = $null
-        $ui.ResourceGrid.ItemsSource   = $null
-        $ui.RGCountText.Text       = '-'
-        $ui.ResourceCountText.Text = '-'
-        $ui.TagCoverageText.Text   = '-'
-        $ui.UntaggedRGText.Text    = '-'
-        $ui.UniqueTagsText.Text    = '-'
+        Set-TaggerBusy $true
+        $scope = Get-CurrentTagScope
+        $azureProfile = $script:ActiveContext
+        Clear-TagScan -Reason 'Scanning the selected Azure scope...'
 
         Update-Status 'Scanning resource groups...' 10
         Flush-UI
 
         # --- Resource Groups ---
-        $rgFilter = $null
-        if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -gt 0) {
-            $rgFilter = $ui.RGSelector.SelectedItem.ToString()
-        }
+        $rgFilter = $scope.ResourceGroup
 
         $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | project name, id, location, tags, subscriptionId"
         if ($rgFilter) {
             $safeRGName = $rgFilter -replace "[`'`"]", ''
             $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | where name =~ '$safeRGName' | project name, id, location, tags, subscriptionId"
         }
-        $allRGs  = Search-AzGraphSafe -Query $rgQuery -Subscriptions @($subId)
+        $allRGs = @(Search-AzGraphSafe -Query $rgQuery -Subscriptions @($subId) -DefaultProfile $azureProfile)
         Flush-UI
 
         Update-Status 'Scanning resources...' 40
@@ -525,8 +719,13 @@ $ui.ScanButton.Add_Click({
         } else {
             $resQuery = "resources | project name, type, resourceGroup, location, tags, subscriptionId, id"
         }
-        $allResources = Search-AzGraphSafe -Query $resQuery -Subscriptions @($subId)
+        $allResources = @(Search-AzGraphSafe -Query $resQuery -Subscriptions @($subId) -DefaultProfile $azureProfile)
         Flush-UI
+        Assert-TagScope -Expected $scope -Actual (Get-CurrentTagScope)
+        Assert-TagScope -Expected $scope -Actual (New-TagScope -Context $azureProfile -ResourceGroup $rgFilter)
+        foreach ($target in @($allRGs) + @($allResources)) {
+            Assert-TagTargetScope -ResourceId $target.id -Scope $scope
+        }
 
         $script:AllRGs       = $allRGs
         $script:AllResources = $allResources
@@ -534,26 +733,12 @@ $ui.ScanButton.Add_Click({
         Update-Status 'Building tag summary...' 70
         Flush-UI
 
-        # --- Required tags ---
-        $requiredTags = @()
-        $rtText = $ui.RequiredTagsInput.Text.Trim()
-        if ($rtText) {
-            $requiredTags = $rtText -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        }
-
         # --- Tag key inventory ---
         $tagKeyCount = @{}
-        $rgSorted    = [System.Collections.Generic.List[PSObject]]::new()
         $untaggedRGs = 0
 
         foreach ($rg in $allRGs) {
-            if ($rg.PSObject.Properties.Match('name').Count -eq 0) { continue }
             $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
-
-            $missingKeys = @()
-            foreach ($rt in $requiredTags) {
-                if (-not $tagMap.ContainsKey($rt)) { $missingKeys += $rt }
-            }
 
             foreach ($k in $tagMap.Keys) {
                 if (-not $tagKeyCount.ContainsKey($k)) { $tagKeyCount[$k] = 0 }
@@ -561,33 +746,13 @@ $ui.ScanButton.Add_Click({
             }
 
             if ($tagMap.Count -eq 0) { $untaggedRGs++ }
-
-            $rgSorted.Add([PSCustomObject]@{
-                Name          = $rg.name
-                Location      = $rg.location
-                TagCount      = $tagMap.Count
-                MissingTags   = if ($missingKeys.Count -gt 0) { $missingKeys -join ', ' } else { '-' }
-                Tags          = ($tagMap.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
-            })
         }
 
         # --- Resource rows ---
-        $resSorted = [System.Collections.Generic.List[PSObject]]::new()
         $taggedRes = 0
         foreach ($res in $allResources) {
-            if ($res.PSObject.Properties.Match('name').Count -eq 0) { continue }
             $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
             if ($tagMap.Count -gt 0) { $taggedRes++ }
-
-            $shortType = ($res.type -split '/')[-1]
-            $resSorted.Add([PSCustomObject]@{
-                Name          = $res.name
-                Type          = $shortType
-                ResourceGroup = $res.resourceGroup
-                TagCount      = $tagMap.Count
-                Tags          = ($tagMap.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
-                ResourceId    = $res.id
-            })
         }
 
         # --- Tag summary grid ---
@@ -611,9 +776,9 @@ $ui.ScanButton.Add_Click({
         Flush-UI
         $ui.TagSummaryGrid.ItemsSource = @($tagSummary)
         Flush-UI
-        $ui.RGGrid.ItemsSource         = @($rgSorted)
+        Update-ResourceGroupView
         Flush-UI
-        $ui.ResourceGrid.ItemsSource   = @($resSorted)
+        Update-ResourceView
         Flush-UI
 
         # --- Summary cards ---
@@ -626,51 +791,24 @@ $ui.ScanButton.Add_Click({
         # Auto-populate Remove Tags dropdown
         Update-Status 'Discovering tag keys...' 90
         Flush-UI
-        $ui.RemoveTagSelector.Items.Clear()
-        $removeTagKeys = @{}
-        foreach ($rg in $script:AllRGs) {
-            $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
-            foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
-        }
-        foreach ($res in $script:AllResources) {
-            $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
-            foreach ($k in $tagMap.Keys) { $removeTagKeys[$k] = $true }
-        }
-        foreach ($k in ($removeTagKeys.Keys | Sort-Object)) {
-            $ui.RemoveTagSelector.Items.Add($k) | Out-Null
-        }
-        if ($ui.RemoveTagSelector.Items.Count -gt 0) {
-            $ui.RemoveTagSelector.SelectedIndex = 0
-        }
-        $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
-
-        $ui.ExportButton.IsEnabled  = $true
-        $ui.ApplyTagsButton.IsEnabled = $true
-        $ui.ScanButton.IsEnabled    = $true
-        $ui.SubscriptionSelector.IsEnabled = $true
-        $ui.ScopeLevel.IsEnabled    = $true
-        $ui.RGSelector.IsEnabled    = ($ui.ScopeLevel.SelectedIndex -eq 1)
+        $script:ScanScope = $scope
+        $script:ScanContext = $azureProfile
+        $script:ScannedAt = Get-Date
+        $groupLabel = if ($rgFilter) { $rgFilter } else { '(all resource groups)' }
+        $ui.ScanScopeText.Text = "$($scope.Environment) | Tenant: $($scope.TenantId) | Subscription: $($scope.SubscriptionId)`nRG: $groupLabel | Account: $($scope.AccountId) | Scanned: $($script:ScannedAt.ToString('u'))"
+        Update-RemoveTagList
 
         Update-Status "Scan complete - $(@($allRGs).Count) RGs, $(@($allResources).Count) resources" 100
         Flush-UI
-
-        # Record scan scope for stale-data detection
-        $script:LastScanSubIdx = $ui.SubscriptionSelector.SelectedIndex
-        $script:LastScanScope  = $ui.ScopeLevel.SelectedIndex
-        $script:LastScanRG     = if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -gt 0) { $ui.RGSelector.SelectedItem.ToString() } else { '' }
     }
     catch {
-        $ui.ScanButton.IsEnabled = $true
-        $ui.SubscriptionSelector.IsEnabled = $true
-        $ui.ScopeLevel.IsEnabled = $true
-        $ui.RGSelector.IsEnabled = ($ui.ScopeLevel.SelectedIndex -eq 1)
+        Clear-TagScan -Reason 'Scan failed. Correct the error and re-scan before continuing.'
         Update-Status "Scan error: $($_.Exception.Message)" 0
-        [System.Windows.MessageBox]::Show(
-            "Scan failed:`n$($_.Exception.Message)",
-            'Scan Error', 'OK', 'Error') | Out-Null
+        Show-TaggerError -Message "Scan failed:`n$($_.Exception.Message)" -Title 'Scan Error'
     }
     finally {
         $script:Scanning = $false
+        Set-TaggerBusy $false
     }
 })
 
@@ -678,46 +816,34 @@ $ui.ScanButton.Add_Click({
 # RG FILTER change
 # ─────────────────────────────────────────────────────────────────
 $ui.RGFilterTag.Add_SelectionChanged({
-    if ($script:Scanning) { return }
-    if (-not $script:AllRGs -or @($script:AllRGs).Count -eq 0) { return }
-
-    $requiredTags = @()
-    $rtText = $ui.RequiredTagsInput.Text.Trim()
-    if ($rtText) { $requiredTags = $rtText -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } }
-
-    $source = $ui.RGGrid.ItemsSource
-    if ($ui.RGFilterTag.SelectedIndex -eq 1 -and $requiredTags.Count -gt 0) {
-        $ui.RGGrid.ItemsSource = @($source | Where-Object { $_.MissingTags -ne '-' })
-    } else {
-        # Re-scan to reload full list
-        $ui.ScanButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
-    }
+    if ($script:Busy) { return }
+    Update-ResourceGroupView
+})
+$ui.RequiredTagsInput.Add_TextChanged({
+    if ($script:Busy) { return }
+    Update-ResourceGroupView
 })
 
 # ─────────────────────────────────────────────────────────────────
 # Resource filter: enable tag name textbox when 'Missing Specific Tag'
 # ─────────────────────────────────────────────────────────────────
 $ui.ResFilterTag.Add_SelectionChanged({
-    $ui.ResFilterTagName.IsEnabled = ($ui.ResFilterTag.SelectedIndex -eq 2)
-
-    if (-not $script:AllResources -or @($script:AllResources).Count -eq 0) { return }
-
-    switch ($ui.ResFilterTag.SelectedIndex) {
-        1 { # Untagged
-            $ui.ResourceGrid.ItemsSource = @($ui.ResourceGrid.ItemsSource | Where-Object { $_.TagCount -eq 0 })
-        }
-        default {
-            # Reload from scan
-        }
-    }
+    if ($script:Busy) { return }
+    Update-ControlState
+    Update-ResourceView
+})
+$ui.ResFilterTagName.Add_TextChanged({
+    if ($script:Busy) { return }
+    Update-ResourceView
 })
 
 # ─────────────────────────────────────────────────────────────────
 # ADD TAG to queue
 # ─────────────────────────────────────────────────────────────────
 $ui.AddTagButton.Add_Click({
+    if ($script:Busy) { return }
     $tagName  = $ui.ApplyTagName.Text.Trim()
-    $tagValue = $ui.ApplyTagValue.Text.Trim()
+    $tagValue = $ui.ApplyTagValue.Text
 
     if (-not $tagName) {
         [System.Windows.MessageBox]::Show('Tag name is required.', 'Validation', 'OK', 'Warning') | Out-Null
@@ -746,10 +872,12 @@ $ui.AddTagButton.Add_Click({
 # CLEAR / REMOVE tag queue items
 # ─────────────────────────────────────────────────────────────────
 $ui.ClearTagsButton.Add_Click({
+    if ($script:Busy) { return }
     $script:TagQueue.Clear()
 })
 
 $ui.RemoveTagButton.Add_Click({
+    if ($script:Busy) { return }
     $sel = $ui.TagQueueGrid.SelectedItem
     if ($sel) { $script:TagQueue.Remove($sel) }
 })
@@ -758,17 +886,16 @@ $ui.RemoveTagButton.Add_Click({
 # RESOURCES TAB - Enable/disable Tag Selected button on selection
 # ─────────────────────────────────────────────────────────────────
 $ui.ResourceGrid.Add_SelectionChanged({
-    $ui.ResTagSelectedButton.IsEnabled = ($ui.ResourceGrid.SelectedItems.Count -gt 0)
+    if ($script:Busy) { return }
+    Update-ControlState
     $ui.ResTagStatusText.Text = "$($ui.ResourceGrid.SelectedItems.Count) selected"
 })
 
 # ─────────────────────────────────────────────────────────────────
 # RESOURCES TAB - Apply tag to selected resources inline
 # ─────────────────────────────────────────────────────────────────
-$ui.ResTagSelectedButton.Add_Click({
-    $selected = @($ui.ResourceGrid.SelectedItems)
-    if ($selected.Count -eq 0) { return }
-
+function Read-ResourceTagInput {
+    param([int]$ResourceCount)
     # Pop a small dialog asking for tag name and value
     $tagDlgXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -794,7 +921,7 @@ $ui.ResTagSelectedButton.Add_Click({
         <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Name="InfoLabel" FontSize="12" Foreground="#666"
                    Margin="0,0,0,4"/>
         <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Name="ApplyBtn" Content="Apply" Width="90" Height="32" FontSize="13" FontWeight="SemiBold"
+            <Button Name="ApplyBtn" Content="Preview" Width="90" Height="32" FontSize="13" FontWeight="SemiBold"
                     Background="#107C10" Foreground="White" BorderThickness="0" Margin="0,0,8,0"/>
             <Button Name="CancelBtn" Content="Cancel" Width="90" Height="32" FontSize="13"
                     Background="White" Foreground="#333" BorderBrush="#CCC" BorderThickness="1"/>
@@ -805,6 +932,8 @@ $ui.ResTagSelectedButton.Add_Click({
 
     $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($tagDlgXaml))
     $tagDlg = [System.Windows.Markup.XamlReader]::Load($rdr)
+    $rdr.Dispose()
+    $tagDlg.Owner = $window
 
     $tagNameBox  = $tagDlg.FindName('TagNameBox')
     $tagValueBox = $tagDlg.FindName('TagValueBox')
@@ -812,99 +941,47 @@ $ui.ResTagSelectedButton.Add_Click({
     $applyBtn    = $tagDlg.FindName('ApplyBtn')
     $cancelDlgBtn = $tagDlg.FindName('CancelBtn')
 
-    $infoLabel.Text = "Applying to $($selected.Count) resource(s)"
+    $infoLabel.Text = "Previewing $ResourceCount resource(s)"
 
     $applyBtn.Add_Click({ $tagDlg.DialogResult = $true; $tagDlg.Close() }.GetNewClosure())
     $cancelDlgBtn.Add_Click({ $tagDlg.DialogResult = $false; $tagDlg.Close() }.GetNewClosure())
 
-    $result = $tagDlg.ShowDialog()
+    Set-TaggerBusy $true
+    try { $result = $tagDlg.ShowDialog() }
+    finally { Set-TaggerBusy $false }
     if (-not $result) { return }
 
     $tagName  = $tagNameBox.Text.Trim()
-    $tagValue = $tagValueBox.Text.Trim()
+    $tagValue = $tagValueBox.Text
     if ([string]::IsNullOrWhiteSpace($tagName)) {
         [System.Windows.MessageBox]::Show('Tag name cannot be empty.', 'Validation', 'OK', 'Warning') | Out-Null
         return
     }
 
-    $overwrite = $ui.ResOverwriteCheck.IsChecked
-    $successCount = 0
-    $skipCount    = 0
-    $errorCount   = 0
-    $total        = $selected.Count
+    return [pscustomobject]@{ TagName = $tagName; TagValue = $tagValue }
+}
 
-    foreach ($resObj in $selected) {
-        try {
-            Update-Status "Tagging $($resObj.Name)..." ([math]::Round(($successCount + $skipCount + $errorCount) / [math]::Max($total,1) * 100))
-
-            $resId = $resObj.ResourceId
-            Flush-UI
-            $resource = Get-AzTag -ResourceId $resId -ErrorAction Stop
-            Flush-UI
-            $existing = @{}
-            if ($resource.Properties -and $resource.Properties.TagsProperty) {
-                foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
-                    $existing[$kv.Key] = $kv.Value
-                }
-            }
-
-            if ($existing.ContainsKey($tagName) -and -not $overwrite) {
-                $skipCount++
-            } else {
-                $tagHash = @{ $tagName = $tagValue }
-                Flush-UI
-                Update-AzTag -ResourceId $resId -Tag $tagHash -Operation Merge -ErrorAction Stop | Out-Null
-                Flush-UI
-                $successCount++
-            }
-        } catch {
-            $errorCount++
-            $lastErr = $_.Exception.Message
-        }
-    }
-
-    $statusMsg = "Done: $successCount applied, $skipCount skipped, $errorCount errors"
-    if ($errorCount -gt 0 -and $lastErr) { $statusMsg += " - $lastErr" }
-    $ui.ResTagStatusText.Text = $statusMsg
-    Update-Status "Tag applied to $successCount resources" 100
+$ui.ResTagSelectedButton.Add_Click({
+    if ($script:Busy -or $null -eq $script:ScanScope) { return }
+    $selected = @($ui.ResourceGrid.SelectedItems)
+    if ($selected.Count -eq 0) { return }
+    $tag = Read-ResourceTagInput -ResourceCount $selected.Count
+    if ($null -eq $tag) { return }
+    $targets = @($selected | ForEach-Object {
+        [pscustomobject]@{ Id = $_.ResourceId; Name = $_.Name; Kind = $_.Type }
+    })
+    Invoke-TagWorkflow -Targets $targets -Tags @{ $tag.TagName = $tag.TagValue } `
+        -DryRun $ui.ResDryRunCheck.IsChecked -Overwrite $ui.ResOverwriteCheck.IsChecked
+    $ui.ResTagStatusText.Text = $ui.ApplyStatusText.Text
+    $ui.MainTabs.SelectedIndex = 3
 })
 
 # ─────────────────────────────────────────────────────────────────
 # APPLY TAGS
 # ─────────────────────────────────────────────────────────────────
-$ui.ApplyTagsButton.Add_Click({
-    $isDryRun  = $ui.DryRunCheck.IsChecked
-    $overwrite = $ui.OverwriteCheck.IsChecked
-    $scopeIdx  = $ui.ApplyScope.SelectedIndex
-    $subIdx    = $ui.SubscriptionSelector.SelectedIndex
-    if ($subIdx -lt 0) { return }
-    $sub = $script:Subscriptions[$subIdx]
-
-    # Warn if scope has changed since last scan
-    $currentRG = if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -gt 0) { $ui.RGSelector.SelectedItem.ToString() } else { '' }
-    $scopeChanged = ($subIdx -ne $script:LastScanSubIdx) -or
-                    ($ui.ScopeLevel.SelectedIndex -ne $script:LastScanScope) -or
-                    ($currentRG -ne $script:LastScanRG)
-    if ($scopeChanged -and $script:LastScanSubIdx -ge 0) {
-        $warn = [System.Windows.MessageBox]::Show(
-            "The scope has changed since the last scan. The tags will be applied based on the previous scan data.`n`nRe-scan first to pick up the new scope, or click Yes to continue with the existing scan data.",
-            'Scope Changed', 'YesNo', 'Warning')
-        if ($warn -ne 'Yes') { return }
-    }
-
-    # ── Selected Resource Groups picker mode ────────────────
-    if ($scopeIdx -eq 4) {
-        if ($script:TagQueue.Count -eq 0) {
-            [System.Windows.MessageBox]::Show('Add at least one tag to the queue first.', 'No Tags', 'OK', 'Warning') | Out-Null
-            return
-        }
-        if (-not $script:AllRGs -or @($script:AllRGs).Count -eq 0) {
-            [System.Windows.MessageBox]::Show('Run a scan first so resource groups are available.', 'No Scan Data', 'OK', 'Warning') | Out-Null
-            return
-        }
-
-        # Build picker dialog
-        $pickerXaml = @"
+function Select-TagResourceGroups {
+    param([object[]]$Groups)
+    $pickerXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         Title="Select Resource Groups" Width="560" Height="520"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
@@ -929,7 +1006,7 @@ $ui.ApplyTagsButton.Add_Click({
                  BorderBrush="#CCC" BorderThickness="1" SelectionMode="Extended"/>
         <TextBlock Grid.Row="3" Name="CountLabel" Text="0 selected" FontSize="12" Foreground="#666" Margin="0,0,0,8"/>
         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Name="OkBtn" Content="Apply" Width="90" Height="32" FontSize="13" FontWeight="SemiBold"
+            <Button Name="OkBtn" Content="Preview" Width="90" Height="32" FontSize="13" FontWeight="SemiBold"
                     Background="#107C10" Foreground="White" BorderThickness="0" Margin="0,0,8,0" IsEnabled="False"/>
             <Button Name="CancelBtn" Content="Cancel" Width="90" Height="32" FontSize="13"
                     Background="White" Foreground="#333" BorderBrush="#CCC" BorderThickness="1"/>
@@ -938,142 +1015,60 @@ $ui.ApplyTagsButton.Add_Click({
 </Window>
 "@
 
-        $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($pickerXaml))
-        $dlg = [System.Windows.Markup.XamlReader]::Load($rdr)
+    $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($pickerXaml))
+    $dlg = [System.Windows.Markup.XamlReader]::Load($rdr)
+    $rdr.Dispose()
+    $dlg.Owner = $window
 
-        $rgList       = $dlg.FindName('RGList')
-        $okBtn        = $dlg.FindName('OkBtn')
-        $cancelBtn    = $dlg.FindName('CancelBtn')
-        $selectAllBtn = $dlg.FindName('SelectAllBtn')
-        $selectNoneBtn = $dlg.FindName('SelectNoneBtn')
-        $countLabel   = $dlg.FindName('CountLabel')
+    $rgList       = $dlg.FindName('RGList')
+    $okBtn        = $dlg.FindName('OkBtn')
+    $cancelBtn    = $dlg.FindName('CancelBtn')
+    $selectAllBtn = $dlg.FindName('SelectAllBtn')
+    $selectNoneBtn = $dlg.FindName('SelectNoneBtn')
+    $countLabel   = $dlg.FindName('CountLabel')
 
-        foreach ($rg in ($script:AllRGs | Sort-Object { $_.name })) {
-            $item = [System.Windows.Controls.ListBoxItem]::new()
-            $item.Content = $rg.name
-            $item.Tag = $rg
-            $rgList.Items.Add($item) | Out-Null
-        }
-
-        $rgList.Add_SelectionChanged({
-            $count = $rgList.SelectedItems.Count
-            $countLabel.Text = "$count selected"
-            $okBtn.IsEnabled = ($count -gt 0)
-        }.GetNewClosure())
-
-        $selectAllBtn.Add_Click({ $rgList.SelectAll() }.GetNewClosure())
-        $selectNoneBtn.Add_Click({ $rgList.UnselectAll() }.GetNewClosure())
-        $okBtn.Add_Click({ $dlg.DialogResult = $true; $dlg.Close() }.GetNewClosure())
-        $cancelBtn.Add_Click({ $dlg.DialogResult = $false; $dlg.Close() }.GetNewClosure())
-
-        $picked = $dlg.ShowDialog()
-        if (-not $picked -or $rgList.SelectedItems.Count -eq 0) { return }
-
-        $selectedRGs = @($rgList.SelectedItems | ForEach-Object { $_.Tag })
-
-        $tagsToApply = @{}
-        foreach ($t in $script:TagQueue) { $tagsToApply[$t.TagName] = $t.TagValue }
-
-        $modeLabel = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
-        $rgCount   = @($selectedRGs).Count
-
-        if ($isDryRun) {
-            $msg = "Preview applying $($tagsToApply.Count) tag(s) to $rgCount resource group(s).`n`nProceed with dry run?"
-            $confirm = [System.Windows.MessageBox]::Show($msg, 'Confirm Dry Run', 'YesNo', 'Question')
-        } else {
-            $msg = "You are about to apply $($tagsToApply.Count) tag(s) to $rgCount resource group(s).`n`nThis is a LIVE operation. Continue?"
-            $confirm = [System.Windows.MessageBox]::Show($msg, 'Confirm Tag Application', 'YesNo', 'Warning')
-        }
-        if ($confirm -ne 'Yes') { return }
-
-        try {
-            $ui.ApplyTagsButton.IsEnabled = $false
-            $results = [System.Collections.Generic.List[PSObject]]::new()
-            $done = 0
-
-            foreach ($rgObj in $selectedRGs) {
-                $done++
-                $pct = [math]::Round(($done / [math]::Max($rgCount,1)) * 100)
-                Update-Status "[$modeLabel] Tagging RG $done / $rgCount - $($rgObj.name)" $pct
-
-                $status = 'Success'
-                $detail = ''
-
-                try {
-                    if ($isDryRun) {
-                        $status = 'DryRun'
-                        $detail = ($tagsToApply.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
-                    } else {
-                        Flush-UI
-                        $resource = Get-AzTag -ResourceId $rgObj.id -ErrorAction Stop
-                        Flush-UI
-                        $existing = @{}
-                        if ($resource.Properties -and $resource.Properties.TagsProperty) {
-                            foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
-                                $existing[$kv.Key] = $kv.Value
-                            }
-                        }
-
-                        $merged = @{}
-                        foreach ($kv in $existing.GetEnumerator()) { $merged[$kv.Key] = $kv.Value }
-
-                        $applied = @()
-                        $skipped = @()
-                        foreach ($kv in $tagsToApply.GetEnumerator()) {
-                            if ($merged.ContainsKey($kv.Key) -and -not $overwrite) {
-                                $skipped += $kv.Key
-                            } else {
-                                $merged[$kv.Key] = $kv.Value
-                                $applied += $kv.Key
-                            }
-                        }
-
-                        if (@($applied).Count -gt 0) {
-                            Flush-UI
-                            Update-AzTag -ResourceId $rgObj.id -Tag $merged -Operation Merge -ErrorAction Stop | Out-Null
-                            Flush-UI
-                            $detail = "Applied: $($applied -join ', ')"
-                            if (@($skipped).Count -gt 0) { $detail += " | Skipped (exists): $($skipped -join ', ')" }
-                        } else {
-                            $status = 'Skipped'
-                            $detail = 'All tags already exist'
-                        }
-                    }
-                } catch {
-                    $status = 'Error'
-                    $detail = $_.Exception.Message
-                }
-
-                $results.Add([PSCustomObject]@{
-                    Resource = $rgObj.name; Kind = 'ResourceGroup'
-                    Status = $status; Detail = $detail
-                })
-                $ui.ApplyResultsGrid.ItemsSource = @($results)
-                Flush-UI
-            }
-
-            $ui.ApplyResultsGrid.ItemsSource = @($results)
-            Flush-UI
-
-            $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
-            $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
-            $ui.ApplyStatusText.Text = "$modeLabel complete - $successCount succeeded, $errorCount failed out of $rgCount"
-
-            $ui.ApplyTagsButton.IsEnabled = $true
-            Update-Status "$modeLabel tagging complete - $rgCount resource groups processed" 100
-            Flush-UI
-        }
-        catch {
-            $ui.ApplyTagsButton.IsEnabled = $true
-            Update-Status "Apply error: $($_.Exception.Message)" 0
-            [System.Windows.MessageBox]::Show(
-                "Tag application failed:`n$($_.Exception.Message)",
-                'Apply Error', 'OK', 'Error') | Out-Null
-        }
-        return
+    foreach ($rg in ($Groups | Sort-Object { $_.name })) {
+        $item = [System.Windows.Controls.ListBoxItem]::new()
+        $item.Content = $rg.name
+        $item.Tag = $rg
+        $rgList.Items.Add($item) | Out-Null
     }
 
-    # ── Normal queue-based mode ─────────────────────────────
+    $rgList.Add_SelectionChanged({
+        $count = $rgList.SelectedItems.Count
+        $countLabel.Text = "$count selected"
+        $okBtn.IsEnabled = ($count -gt 0)
+    }.GetNewClosure())
+
+    $selectAllBtn.Add_Click({ $rgList.SelectAll() }.GetNewClosure())
+    $selectNoneBtn.Add_Click({ $rgList.UnselectAll() }.GetNewClosure())
+    $okBtn.Add_Click({ $dlg.DialogResult = $true; $dlg.Close() }.GetNewClosure())
+    $cancelBtn.Add_Click({ $dlg.DialogResult = $false; $dlg.Close() }.GetNewClosure())
+
+    Set-TaggerBusy $true
+    try { $picked = $dlg.ShowDialog() }
+    finally { Set-TaggerBusy $false }
+    if (-not $picked -or $rgList.SelectedItems.Count -eq 0) { return }
+
+    return @($rgList.SelectedItems | ForEach-Object { $_.Tag })
+}
+
+function Get-ScanTarget {
+    param([ValidateSet('ResourceGroups','Resources','All')][string]$Kind)
+    if ($Kind -in 'ResourceGroups','All') {
+        foreach ($rg in $script:AllRGs) {
+            [pscustomobject]@{ Id = $rg.id; Name = $rg.name; Kind = 'ResourceGroup' }
+        }
+    }
+    if ($Kind -in 'Resources','All') {
+        foreach ($resource in $script:AllResources) {
+            [pscustomobject]@{ Id = $resource.id; Name = $resource.name; Kind = ($resource.type -split '/')[-1] }
+        }
+    }
+}
+
+$ui.ApplyTagsButton.Add_Click({
+    if ($script:Busy -or $null -eq $script:ScanScope) { return }
     if ($script:TagQueue.Count -eq 0) {
         [System.Windows.MessageBox]::Show('Add at least one tag to the queue first.', 'No Tags', 'OK', 'Warning') | Out-Null
         return
@@ -1085,142 +1080,30 @@ $ui.ApplyTagsButton.Add_Click({
         $tagsToApply[$t.TagName] = $t.TagValue
     }
 
-    $modeLabel = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
-
-    if ($isDryRun) {
-        $msg = "Preview applying $($tagsToApply.Count) tag(s) to resources in $($sub.Name).`n`nProceed with dry run?"
-        $confirm = [System.Windows.MessageBox]::Show(
-            $msg, 'Confirm Dry Run', 'YesNo', 'Question')
-        if ($confirm -ne 'Yes') { return }
-    } else {
-        $msg = "You are about to apply $($tagsToApply.Count) tag(s) to resources in $($sub.Name)." + "`n`nThis is a LIVE operation. Continue?"
-        $confirm = [System.Windows.MessageBox]::Show(
-            $msg, 'Confirm Tag Application', 'YesNo', 'Warning')
-        if ($confirm -ne 'Yes') { return }
-    }
-
-    try {
-        $ui.ApplyTagsButton.IsEnabled = $false
-        $results = [System.Collections.Generic.List[PSObject]]::new()
-
-        # Determine targets
-        $targets = @()
-        switch ($scopeIdx) {
-            0 { # All RGs in scope
-                $targets = $script:AllRGs | ForEach-Object {
-                    [PSCustomObject]@{ Id = $_.id; Name = $_.name; Kind = 'ResourceGroup' }
-                }
-            }
-            1 { # RGs missing the first queued tag
-                $firstTag = $script:TagQueue[0].TagName
-                foreach ($rg in $script:AllRGs) {
-                    $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
-                    if (-not $tagMap.ContainsKey($firstTag)) {
-                        $targets += [PSCustomObject]@{ Id = $rg.id; Name = $rg.name; Kind = 'ResourceGroup' }
-                    }
-                }
-            }
-            2 { # All resources in scope
-                $targets = $script:AllResources | ForEach-Object {
-                    [PSCustomObject]@{ Id = $_.id; Name = $_.name; Kind = ($_.type -split '/')[-1] }
-                }
-            }
-            3 { # Untagged resources
-                foreach ($res in $script:AllResources) {
-                    $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
-                    if ($tagMap.Count -eq 0) {
-                        $targets += [PSCustomObject]@{ Id = $res.id; Name = $res.name; Kind = ($res.type -split '/')[-1] }
-                    }
-                }
-            }
+    $selection = 'All'
+    $targets = @()
+    switch ($ui.ApplyScope.SelectedIndex) {
+        0 { $targets = @(Get-ScanTarget -Kind ResourceGroups) }
+        1 {
+            $targets = @(Get-ScanTarget -Kind ResourceGroups)
+            $selection = 'MissingTag'
         }
-
-        $total = @($targets).Count
-        $done  = 0
-
-        foreach ($target in $targets) {
-            $done++
-            $pct = [math]::Round(($done / [math]::Max($total,1)) * 100)
-            Update-Status "[$modeLabel] Tagging $done / $total - $($target.Name)" $pct
-
-            $status = 'Success'
-            $detail = ''
-
-            try {
-                if ($isDryRun) {
-                    $status = 'DryRun'
-                    $detail = ($tagsToApply.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
-                } else {
-                    # Get current tags
-                    Flush-UI
-                    $resource  = Get-AzTag -ResourceId $target.Id -ErrorAction Stop
-                    Flush-UI
-                    $existing  = @{}
-                    if ($resource.Properties -and $resource.Properties.TagsProperty) {
-                        foreach ($kv in $resource.Properties.TagsProperty.GetEnumerator()) {
-                            $existing[$kv.Key] = $kv.Value
-                        }
-                    }
-
-                    $merged = @{}
-                    foreach ($kv in $existing.GetEnumerator()) { $merged[$kv.Key] = $kv.Value }
-
-                    $applied  = @()
-                    $skipped  = @()
-                    foreach ($kv in $tagsToApply.GetEnumerator()) {
-                        if ($merged.ContainsKey($kv.Key) -and -not $overwrite) {
-                            $skipped += $kv.Key
-                        } else {
-                            $merged[$kv.Key] = $kv.Value
-                            $applied += $kv.Key
-                        }
-                    }
-
-                    if (@($applied).Count -gt 0) {
-                        Flush-UI
-                        Update-AzTag -ResourceId $target.Id -Tag $merged -Operation Merge -ErrorAction Stop | Out-Null
-                        Flush-UI
-                        $detail = "Applied: $($applied -join ', ')"
-                        if (@($skipped).Count -gt 0) { $detail += " | Skipped (exists): $($skipped -join ', ')" }
-                    } else {
-                        $status = 'Skipped'
-                        $detail = "All tags already exist"
-                    }
-                }
-            }
-            catch {
-                $status = 'Error'
-                $detail = $_.Exception.Message
-            }
-
-            $results.Add([PSCustomObject]@{
-                Resource = $target.Name
-                Kind     = $target.Kind
-                Status   = $status
-                Detail   = $detail
+        2 { $targets = @(Get-ScanTarget -Kind Resources) }
+        3 {
+            $targets = @(Get-ScanTarget -Kind Resources)
+            $selection = 'Untagged'
+        }
+        4 {
+            $groups = @(Select-TagResourceGroups -Groups $script:AllRGs)
+            if ($groups.Count -eq 0) { return }
+            $targets = @($groups | ForEach-Object {
+                [pscustomobject]@{ Id = $_.id; Name = $_.name; Kind = 'ResourceGroup' }
             })
-            $ui.ApplyResultsGrid.ItemsSource = @($results)
-            Flush-UI
         }
-
-        $ui.ApplyResultsGrid.ItemsSource = @($results)
-        Flush-UI
-
-        $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
-        $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
-        $ui.ApplyStatusText.Text = "$modeLabel complete - $successCount succeeded, $errorCount failed out of $total"
-
-        $ui.ApplyTagsButton.IsEnabled = $true
-        Update-Status "$modeLabel tagging complete - $total targets processed" 100
-        Flush-UI
     }
-    catch {
-        $ui.ApplyTagsButton.IsEnabled = $true
-        Update-Status "Apply error: $($_.Exception.Message)" 0
-        [System.Windows.MessageBox]::Show(
-            "Tag application failed:`n$($_.Exception.Message)",
-            'Apply Error', 'OK', 'Error') | Out-Null
-    }
+    Invoke-TagWorkflow -Targets $targets -Tags $tagsToApply -Selection $selection `
+        -SelectionTagName $script:TagQueue[0].TagName -DryRun $ui.DryRunCheck.IsChecked `
+        -Overwrite $ui.OverwriteCheck.IsChecked
 })
 
 # ─────────────────────────────────────────────────────────────────
@@ -1230,173 +1113,51 @@ $ui.RemoveTagValueFilter.Add_GotFocus({
     $ui.RemoveTagValuePlaceholder.Visibility = 'Collapsed'
 })
 $ui.RemoveTagValueFilter.Add_LostFocus({
-    if ([string]::IsNullOrWhiteSpace($ui.RemoveTagValueFilter.Text)) {
+    if ([string]::IsNullOrEmpty($ui.RemoveTagValueFilter.Text)) {
         $ui.RemoveTagValuePlaceholder.Visibility = 'Visible'
     }
 })
+$ui.RemoveMatchValueCheck.Add_Click({ Update-ControlState })
 
 # ─────────────────────────────────────────────────────────────────
 # REMOVE TAGS - Refresh tag list from scan data
 # ─────────────────────────────────────────────────────────────────
 $ui.RefreshTagListButton.Add_Click({
-    if ($script:Scanning) { return }
-    $ui.RefreshTagListButton.IsEnabled = $false
-    Update-Status 'Refreshing tag list...' 50
-    Flush-UI
-
-    # Collect tag keys from already-scanned data only — no extra API calls
-    $tagKeys = @{}
-    foreach ($rg in $script:AllRGs) {
-        $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
-        foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
-    }
-    foreach ($res in $script:AllResources) {
-        $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
-        foreach ($k in $tagMap.Keys) { $tagKeys[$k] = $true }
-    }
-
-    $ui.RemoveTagSelector.Items.Clear()
-    foreach ($k in ($tagKeys.Keys | Sort-Object)) {
-        $ui.RemoveTagSelector.Items.Add($k) | Out-Null
-    }
-    if ($ui.RemoveTagSelector.Items.Count -gt 0) {
-        $ui.RemoveTagSelector.SelectedIndex = 0
-    }
-    $ui.RemoveTagsButton.IsEnabled = ($ui.RemoveTagSelector.Items.Count -gt 0)
-    $ui.RefreshTagListButton.IsEnabled = $true
-    Update-Status "Tag list refreshed - $(@($tagKeys.Keys).Count) unique keys found" 100
+    if ($script:Busy -or $null -eq $script:ScanScope) { return }
+    Update-RemoveTagList
+    Update-Status "Tag list refreshed from the scan - $($ui.RemoveTagSelector.Items.Count) unique keys found" 100
 })
 
 # ─────────────────────────────────────────────────────────────────
 # REMOVE TAGS - Execute removal
 # ─────────────────────────────────────────────────────────────────
 $ui.RemoveTagsButton.Add_Click({
+    if ($script:Busy -or $null -eq $script:ScanScope) { return }
     $tagToRemove = $ui.RemoveTagSelector.Text.Trim()
     if (-not $tagToRemove) {
         [System.Windows.MessageBox]::Show('Select or enter a tag name to remove.', 'No Tag Selected', 'OK', 'Warning') | Out-Null
         return
     }
 
-    $valueFilter = $ui.RemoveTagValueFilter.Text.Trim()
-    $isDryRun    = $ui.RemoveDryRunCheck.IsChecked
-    $scopeIdx    = $ui.RemoveScope.SelectedIndex
-    $modeLabel   = if ($isDryRun) { 'DRY RUN' } else { 'LIVE' }
-
-    $scopeDesc = @('all RGs', 'all resources', 'all RGs and resources')[$scopeIdx]
-    if ($isDryRun) {
-        $removeMsg = "Preview removing tag '$tagToRemove' from $scopeDesc."
-        if ($valueFilter) { $removeMsg += " (only where value = '$valueFilter')" }
-        $removeMsg += "`n`nProceed with dry run?"
-        $confirm = [System.Windows.MessageBox]::Show($removeMsg, 'Confirm Dry Run', 'YesNo', 'Question')
-        if ($confirm -ne 'Yes') { return }
-    } else {
-        $removeMsg = "You are about to REMOVE tag '$tagToRemove' from $scopeDesc."
-        if ($valueFilter) { $removeMsg += " (only where value = '$valueFilter')" }
-        $removeMsg += "`n`nThis is a LIVE operation. Continue?"
-        $confirm = [System.Windows.MessageBox]::Show($removeMsg, 'Confirm Tag Removal', 'YesNo', 'Warning')
-        if ($confirm -ne 'Yes') { return }
-    }
-
-    try {
-        $ui.RemoveTagsButton.IsEnabled = $false
-        $results = [System.Collections.Generic.List[PSObject]]::new()
-
-        # Build target list based on scope
-        $targets = [System.Collections.Generic.List[PSObject]]::new()
-
-        if ($scopeIdx -eq 0 -or $scopeIdx -eq 2) {
-            foreach ($rg in $script:AllRGs) {
-                $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
-                if ($tagMap.ContainsKey($tagToRemove)) {
-                    if (-not $valueFilter -or $tagMap[$tagToRemove] -eq $valueFilter) {
-                        $targets.Add([PSCustomObject]@{
-                            Id = $rg.id; Name = $rg.name; Kind = 'ResourceGroup'
-                            CurrentValue = $tagMap[$tagToRemove]
-                        })
-                    }
-                }
-            }
-        }
-        if ($scopeIdx -eq 1 -or $scopeIdx -eq 2) {
-            foreach ($res in $script:AllResources) {
-                $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
-                if ($tagMap.ContainsKey($tagToRemove)) {
-                    if (-not $valueFilter -or $tagMap[$tagToRemove] -eq $valueFilter) {
-                        $targets.Add([PSCustomObject]@{
-                            Id = $res.id; Name = $res.name; Kind = ($res.type -split '/')[-1]
-                            CurrentValue = $tagMap[$tagToRemove]
-                        })
-                    }
-                }
-            }
-        }
-
-        $total = @($targets).Count
-        $done  = 0
-
-        foreach ($target in $targets) {
-            $done++
-            $pct = [math]::Round(($done / [math]::Max($total,1)) * 100)
-            Update-Status "[$modeLabel] Removing '$tagToRemove' - $done / $total - $($target.Name)" $pct
-
-            $status = 'Success'
-            $detail = ''
-
-            try {
-                if ($isDryRun) {
-                    $status = 'DryRun'
-                    $detail = "Would remove $tagToRemove=$($target.CurrentValue)"
-                } else {
-                    $tagToDelete = @{ $tagToRemove = $target.CurrentValue }
-                    Invoke-AzTagUpdateSafe -ResourceId $target.Id -Tag $tagToDelete -Operation Delete
-                    $detail = "Removed $tagToRemove=$($target.CurrentValue)"
-                }
-            }
-            catch {
-                $status = 'Error'
-                $detail = $_.Exception.Message
-            }
-
-            $results.Add([PSCustomObject]@{
-                Resource      = $target.Name
-                Kind          = $target.Kind
-                Status        = $status
-                PreviousValue = $target.CurrentValue
-                Detail        = $detail
-            })
-            $ui.RemoveResultsGrid.ItemsSource = @($results)
-            Flush-UI
-        }
-
-        $ui.RemoveResultsGrid.ItemsSource = @($results)
-        Flush-UI
-
-        $successCount = @($results | Where-Object { $_.Status -in 'Success','DryRun' }).Count
-        $errorCount   = @($results | Where-Object { $_.Status -eq 'Error' }).Count
-        $ui.RemoveStatusText.Text = "$modeLabel complete - $successCount succeeded, $errorCount failed out of $total"
-
-        $ui.RemoveTagsButton.IsEnabled = $true
-        Update-Status "$modeLabel removal complete - $total targets processed" 100
-        Flush-UI
-    }
-    catch {
-        $ui.RemoveTagsButton.IsEnabled = $true
-        Update-Status "Remove error: $($_.Exception.Message)" 0
-        [System.Windows.MessageBox]::Show(
-            "Tag removal failed:`n$($_.Exception.Message)",
-            'Remove Error', 'OK', 'Error') | Out-Null
-    }
+    $kind = @('ResourceGroups','Resources','All')[$ui.RemoveScope.SelectedIndex]
+    $targets = @(Get-ScanTarget -Kind $kind)
+    Invoke-TagWorkflow -Targets $targets -Tags @{ $tagToRemove = $ui.RemoveTagValueFilter.Text } `
+        -Operation Delete -MatchValue $ui.RemoveMatchValueCheck.IsChecked -DryRun $ui.RemoveDryRunCheck.IsChecked `
+        -ResultsGrid $ui.RemoveResultsGrid -StatusControl $ui.RemoveStatusText
 })
 
 # ─────────────────────────────────────────────────────────────────
 # EXPORT TO CSV
 # ─────────────────────────────────────────────────────────────────
 $ui.ExportButton.Add_Click({
+    if ($script:Busy -or $null -eq $script:ScanScope) { return }
     $dlg = New-Object Microsoft.Win32.SaveFileDialog
     $dlg.Filter   = 'CSV Files (*.csv)|*.csv'
     $dlg.FileName = "AzureTagReport_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
     if ($dlg.ShowDialog()) {
         try {
+            Assert-TagScope -Expected $script:ScanScope -Actual (Get-CurrentTagScope)
+            Set-TaggerBusy $true
             $export = [System.Collections.Generic.List[PSObject]]::new()
             foreach ($rg in $script:AllRGs) {
                 $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
@@ -1422,11 +1183,13 @@ $ui.ExportButton.Add_Click({
                     Tags          = ($tagMap.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
                 })
             }
-            $export | Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
-            Update-Status "Exported $(@($export).Count) rows to $($dlg.FileName)" 100
+            $export | ConvertTo-SpreadsheetSafeRow | Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
+            Update-Status "Exported $($export.Count) rows to $($dlg.FileName). Formula-like cells are prefixed with [text]." 100
         }
         catch {
-            [System.Windows.MessageBox]::Show("Export failed: $($_.Exception.Message)", 'Error', 'OK', 'Error') | Out-Null
+            Show-TaggerError -Message "Export failed: $($_.Exception.Message)"
+        } finally {
+            Set-TaggerBusy $false
         }
     }
 })
@@ -1434,4 +1197,12 @@ $ui.ExportButton.Add_Click({
 # ─────────────────────────────────────────────────────────────────
 # Show window
 # ─────────────────────────────────────────────────────────────────
+$window.Add_Closing({
+    param($sourceWindow, [System.ComponentModel.CancelEventArgs]$closingEvent)
+    if ($script:Busy) {
+        $closingEvent.Cancel = $true
+        $sourceWindow.FindName('StatusText').Text = 'An operation is active. Wait for it to finish before closing.'
+    }
+})
+Update-ControlState
 $window.ShowDialog() | Out-Null

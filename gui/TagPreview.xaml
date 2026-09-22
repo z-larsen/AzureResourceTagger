@@ -1,0 +1,40 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Review Tag Changes" Width="1100" Height="650" MinWidth="750" MinHeight="450"
+        WindowStartupLocation="CenterOwner" Background="#F0F0F0" FontFamily="Segoe UI">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock x:Name="ModeText" FontSize="18" FontWeight="Bold" Foreground="#A4262C" Margin="0,0,0,10"/>
+        <TextBlock x:Name="ScopeText" Grid.Row="1" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10"/>
+        <TextBlock x:Name="SummaryText" Grid.Row="2" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,10"/>
+        <DataGrid x:Name="PlanGrid" Grid.Row="3" AutoGenerateColumns="False" IsReadOnly="True"
+                  EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                  VirtualizingStackPanel.VirtualizationMode="Recycling" CanUserAddRows="False">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Resource" Binding="{Binding Resource}" Width="140"/>
+                <DataGridTextColumn Header="Kind" Binding="{Binding Kind}" Width="110"/>
+                <DataGridTextColumn Header="Tag" Binding="{Binding TagName}" Width="110"/>
+                <DataGridTextColumn Header="Before" Binding="{Binding Before}" Width="120"/>
+                <DataGridTextColumn Header="After" Binding="{Binding After}" Width="120"/>
+                <DataGridTextColumn Header="Action" Binding="{Binding Action}" Width="75"/>
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="90"/>
+                <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" Width="250"/>
+                <DataGridTextColumn Header="Resource ID" Binding="{Binding ResourceId}" Width="350"/>
+            </DataGrid.Columns>
+        </DataGrid>
+        <TextBlock Grid.Row="4" FontSize="12" Foreground="#666" TextWrapping="Wrap" Margin="0,12,0,12"
+                   Text="Current tags are read from Azure. Live execution checks for changes since this preview and verifies results. Azure tag updates are not atomic; another tool can still change tags between validation and writing. Skipped and errored targets are not written."/>
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="ApplyButton" Content="Apply changes" Background="#107C10" Foreground="White"
+                    Padding="16,8" FontSize="13" FontWeight="SemiBold" Margin="0,0,12,0"/>
+            <Button x:Name="CloseButton" Content="Cancel" Padding="16,8" FontSize="13" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

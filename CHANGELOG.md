@@ -2,6 +2,35 @@
 
 All notable changes to the Azure Resource Tagger will be documented in this file.
 
+## [1.3.0] - 2026-09-21
+
+### Added
+- Shared, testable tagging core and before/after preview for bulk apply, selected RGs, individual resources, and removal
+- Default-on dry run for individual-resource tagging
+- Scan identity display and explicit cloud, tenant, account, subscription, and RG scope validation
+- Case-sensitive exact-value removal option, including empty values and whitespace
+- Pre-write conflict checks, post-write verification, and explicit unverified outcomes
+- Pester regression tests covering the core, WPF event wiring, and isolated background write workers
+
+### Fixed
+- Connection/scope changes invalidate cached scans; stale targets cannot be approved through a warning
+- All Azure reads/writes use captured contexts, including background workers
+- Merge payloads contain only intended changes rather than resending unrelated tags
+- Previews reflect actual skips and read errors instead of reporting requested tags as successful changes
+- Filters restore the full inventory locally and react to required-tag and missing-tag name edits
+- Required-tag parsing handles zero/one/multiple names and case-insensitive duplicates
+- Live operations invalidate scan data before subsequent writes/exports, while preserving operation results
+- Shared busy-state gating prevents overlapping operations and closing the window during active work
+
+### Changed
+- Renamed coverage labels to clarify any-tag coverage and RG-only key counts
+- Clarified that the missing-tag bulk scope uses the first queued tag
+- Corrected Azure Policy remediation guidance and documented concurrency, consistency, and testing limits
+
+### Security
+- Neutralized spreadsheet-formula injection in every exported text column using a visible `[text] ` prefix, without changing inventory or Azure tag data
+- Added regression coverage for formula markers, leading control characters, CSV quoting, and the actual export event
+
 ## [1.2.0] - 2026-04-27
 
 ### Added
