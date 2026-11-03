@@ -41,22 +41,26 @@ $requiredModules = @('Az.Accounts','Az.Resources','Az.ResourceGraph')
 foreach ($mod in $requiredModules) {
     if (-not (Get-Module -ListAvailable -Name $mod)) {
         [System.Windows.MessageBox]::Show(
-            "Required module '$mod' is not installed.`n`nRun:  Install-Module $mod -Scope CurrentUser",
+            "Required module '$mod' is not installed.`n`nRun:  Install-Module $mod -Scope CurrentUser -Repository PSGallery",
             'Missing Dependency', 'OK', 'Error') | Out-Null
         return
     }
 }
 
+# Az.Accounts 5.2+ returns clear errors when Azure requires MFA for a write.
+$latestAzAccounts = Get-Module -ListAvailable -Name Az.Accounts | Sort-Object Version -Descending | Select-Object -First 1
+$script:OldAzAccounts = $latestAzAccounts.Version -lt [version]'5.2.0'
+
 # ─────────────────────────────────────────────────────────────────
 # Load XAML
 # ─────────────────────────────────────────────────────────────────
 $xamlPath = Join-Path $script:ScriptRoot 'gui\MainWindow.xaml'
-if (-not (Test-Path $xamlPath)) {
+if (-not (Test-Path -LiteralPath $xamlPath)) {
     [System.Windows.MessageBox]::Show("Cannot find $xamlPath", 'Error', 'OK', 'Error') | Out-Null
     return
 }
 
-[xml]$xaml = Get-Content $xamlPath -Raw -Encoding UTF8
+[xml]$xaml = Get-Content -LiteralPath $xamlPath -Raw -Encoding UTF8
 $reader   = New-Object System.Xml.XmlNodeReader $xaml
 $window   = [Windows.Markup.XamlReader]::Load($reader)
 $reader.Dispose()
@@ -129,6 +133,37 @@ $ui.RequiredTagsInput.Add_LostFocus({
 Add-Type -AssemblyName System.Windows.Forms
 function Flush-UI {
     [System.Windows.Forms.Application]::DoEvents()
+}
+
+# ─────────────────────────────────────────────────────────────────
+# Helper: Neutralize spreadsheet formulas on DataGrid copy (Ctrl+C)
+# ─────────────────────────────────────────────────────────────────
+function Register-GridCopySanitizer {
+    param([Parameter(Mandatory)][System.Windows.Controls.DataGrid]$Grid)
+    $Grid.Add_CopyingRowClipboardContent({
+        param($sender, $e)
+        $safe = @(foreach ($cell in $e.ClipboardRowContent) {
+            [System.Windows.Controls.DataGridClipboardCellContent]::new(
+                $cell.Item, $cell.Column, (Protect-SpreadsheetText ([string]$cell.Content)))
+        })
+        $e.ClipboardRowContent.Clear()
+        foreach ($cell in $safe) { $e.ClipboardRowContent.Add($cell) }
+    })
+}
+foreach ($gridName in 'TagSummaryGrid','RGGrid','ResourceGrid','TagQueueGrid','ApplyResultsGrid','RemoveResultsGrid') {
+    Register-GridCopySanitizer -Grid $ui[$gridName]
+}
+
+# Azure-supplied names can carry control or bidirectional characters; strip them before display.
+function ConvertTo-DisplayText {
+    param([string]$Text)
+    return ($Text -replace '\p{C}', '')
+}
+
+# KQL string literals: escape backslash and single quote.
+function ConvertTo-KqlLiteral {
+    param([string]$Text)
+    return ($Text -replace '\\', '\\' -replace "'", "\'")
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -205,7 +240,10 @@ function Get-CurrentTagScope {
     if ($script:ActiveContext.Subscription.Id -ne $script:Subscriptions[$index].Id) {
         throw 'The Azure context does not match the selected subscription. Reconnect and re-scan.'
     }
-    $group = if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -gt 0) {
+    if ($ui.ScopeLevel.SelectedIndex -eq 1 -and $ui.RGSelector.SelectedIndex -le 0) {
+        throw 'Select a specific resource group, or set the scope level to Subscription.'
+    }
+    $group = if ($ui.ScopeLevel.SelectedIndex -eq 1) {
         $ui.RGSelector.SelectedItem.ToString()
     } else { '' }
     return New-TagScope -Context $script:ActiveContext -ResourceGroup $group
@@ -230,10 +268,10 @@ function Update-RemoveTagList {
     $tagKeys = @{}
     foreach ($resource in @($script:AllRGs) + @($script:AllResources)) {
         $tags = ConvertTo-TagHashtable (Get-SafeTags $resource)
-        foreach ($key in $tags.Keys) { $tagKeys[$key] = $true }
+        foreach ($entry in $tags.GetEnumerator()) { $tagKeys[[string]$entry.Key] = $true }
     }
     $ui.RemoveTagSelector.Items.Clear()
-    foreach ($key in ($tagKeys.Keys | Sort-Object)) { [void]$ui.RemoveTagSelector.Items.Add($key) }
+    foreach ($key in ($tagKeys.PSBase.Keys | Sort-Object)) { [void]$ui.RemoveTagSelector.Items.Add($key) }
     if ($ui.RemoveTagSelector.Items.Count -gt 0) { $ui.RemoveTagSelector.SelectedIndex = 0 }
     Update-ControlState
 }
@@ -307,7 +345,18 @@ function Search-AzGraphSafe {
         if ($skip) { $params['SkipToken'] = $skip }
 
         Flush-UI
-        $result = Search-AzGraph @params
+        $result = $null
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
+            try {
+                $result = Search-AzGraph @params
+                break
+            } catch {
+                $throttled = $_.Exception.Message -match '(?i)\b429\b|too ?many ?requests|throttl|rate ?limit'
+                if (-not $throttled -or $attempt -eq 4) { throw }
+                $waitUntil = (Get-Date).AddSeconds(5 * $attempt)
+                while ((Get-Date) -lt $waitUntil) { Flush-UI; Start-Sleep -Milliseconds 200 }
+            }
+        }
         Flush-UI
 
         if ($null -eq $result) { break }
@@ -339,10 +388,11 @@ function Search-AzGraphSafe {
 # ─────────────────────────────────────────────────────────────────
 function New-TagPreviewWindow {
     param([object[]]$Plan, $Scope, [bool]$DryRun)
-    [xml]$previewXaml = Get-Content (Join-Path $script:ScriptRoot 'gui\TagPreview.xaml') -Raw -Encoding UTF8
+    [xml]$previewXaml = Get-Content -LiteralPath (Join-Path $script:ScriptRoot 'gui\TagPreview.xaml') -Raw -Encoding UTF8
     $previewReader = [System.Xml.XmlNodeReader]::new($previewXaml)
     try { $dialog = [Windows.Markup.XamlReader]::Load($previewReader) }
     finally { $previewReader.Dispose() }
+    Register-GridCopySanitizer -Grid $dialog.FindName('PlanGrid')
     $dialog.Owner = $window
     $mode = if ($DryRun) { 'DRY RUN - no changes will be written' } else { 'LIVE - review before applying' }
     $group = if ($Scope.ResourceGroup) { $Scope.ResourceGroup } else { '(all resource groups)' }
@@ -446,7 +496,7 @@ function Invoke-TagWorkflow {
 function Show-TenantPicker {
     param([object[]]$Tenants)
 
-    $pickerXaml = @"
+    $pickerXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         Title="Select Tenant" Width="520" Height="420"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
@@ -469,7 +519,7 @@ function Show-TenantPicker {
         </StackPanel>
     </Grid>
 </Window>
-"@
+'@
 
     $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($pickerXaml))
     $dlg = [System.Windows.Markup.XamlReader]::Load($rdr)
@@ -480,7 +530,7 @@ function Show-TenantPicker {
 
     foreach ($t in $Tenants) {
         $display = if ($t.Name -and $t.Name -ne $t.TenantId) {
-            "$($t.Name)  ($($t.TenantId))"
+            "$(ConvertTo-DisplayText $t.Name)  ($($t.TenantId))"
         } else {
             "$($t.TenantId)"
         }
@@ -529,8 +579,11 @@ function Connect-ToAzure {
     try {
         Update-Status "Connecting to Azure $envLabel..." 10
 
-        # Disable Az 12+ interactive subscription picker
-        $env:AZURE_LOGIN_EXPERIENCE_V2 = 'Off'
+        # Turn off the Az interactive subscription picker for this process only; the tool has its own pickers.
+        if (Get-Command Update-AzConfig -ParameterName LoginExperienceV2 -ErrorAction SilentlyContinue) {
+            Update-AzConfig -LoginExperienceV2 Off -Scope Process -ErrorAction SilentlyContinue | Out-Null
+        }
+        $env:AzPSLoginExperienceV2 = 'Off'
 
         $ctx = Get-AzContext -ErrorAction Stop
         if (-not $ctx -or $ctx.Environment.Name -ne $AzureEnvironment) {
@@ -587,7 +640,7 @@ function Connect-ToAzure {
 
         $ui.SubscriptionSelector.Items.Clear()
         foreach ($sub in $script:Subscriptions) {
-            $item = "$($sub.Name)  ($($sub.Id))"
+            $item = "$(ConvertTo-DisplayText $sub.Name)  ($($sub.Id))"
             $ui.SubscriptionSelector.Items.Add($item) | Out-Null
         }
         $ui.SubscriptionSelector.SelectedIndex = 0
@@ -599,6 +652,9 @@ function Connect-ToAzure {
         $btn.Content = "$($script:LockClosed) $envLabel Tenant"
         $subCount = @($script:Subscriptions).Count
         Update-Status "Connected to $envLabel - $subCount subscriptions found" 100
+        if ($script:OldAzAccounts) {
+            Update-Status "Connected to $envLabel - $subCount subscriptions found. Update Az.Accounts to 5.2 or later for clear MFA errors on tag writes." 100
+        }
     }
     catch {
         $script:Connected = $false
@@ -703,7 +759,7 @@ $ui.ScanButton.Add_Click({
 
         $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | project name, id, location, tags, subscriptionId"
         if ($rgFilter) {
-            $safeRGName = $rgFilter -replace "[`'`"]", ''
+            $safeRGName = ConvertTo-KqlLiteral $rgFilter
             $rgQuery = "resourcecontainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | where name =~ '$safeRGName' | project name, id, location, tags, subscriptionId"
         }
         $allRGs = @(Search-AzGraphSafe -Query $rgQuery -Subscriptions @($subId) -DefaultProfile $azureProfile)
@@ -714,8 +770,8 @@ $ui.ScanButton.Add_Click({
 
         # --- Resources ---
         if ($rgFilter) {
-            $safeRGFilter = $rgFilter -replace "[`'`"]", ''
-            $resQuery = "resources | where resourceGroup =~ `'$safeRGFilter`' | project name, type, resourceGroup, location, tags, subscriptionId, id"
+            $safeRGFilter = ConvertTo-KqlLiteral $rgFilter
+            $resQuery = "resources | where resourceGroup =~ '$safeRGFilter' | project name, type, resourceGroup, location, tags, subscriptionId, id"
         } else {
             $resQuery = "resources | project name, type, resourceGroup, location, tags, subscriptionId, id"
         }
@@ -740,19 +796,20 @@ $ui.ScanButton.Add_Click({
         foreach ($rg in $allRGs) {
             $tagMap = ConvertTo-TagHashtable (Get-SafeTags $rg)
 
-            foreach ($k in $tagMap.Keys) {
+            foreach ($entry in $tagMap.GetEnumerator()) {
+                $k = [string]$entry.Key
                 if (-not $tagKeyCount.ContainsKey($k)) { $tagKeyCount[$k] = 0 }
                 $tagKeyCount[$k]++
             }
 
-            if ($tagMap.Count -eq 0) { $untaggedRGs++ }
+            if ($tagMap.PSBase.Count -eq 0) { $untaggedRGs++ }
         }
 
         # --- Resource rows ---
         $taggedRes = 0
         foreach ($res in $allResources) {
             $tagMap = ConvertTo-TagHashtable (Get-SafeTags $res)
-            if ($tagMap.Count -gt 0) { $taggedRes++ }
+            if ($tagMap.PSBase.Count -gt 0) { $taggedRes++ }
         }
 
         # --- Tag summary grid ---
@@ -769,7 +826,7 @@ $ui.ScanButton.Add_Click({
         $coveragePct = if (@($allResources).Count) { [math]::Round(($taggedRes / @($allResources).Count) * 100, 1) } else { 0 }
 
         # --- Unique tag keys ---
-        $uniqueTags = $tagKeyCount.Keys.Count
+        $uniqueTags = $tagKeyCount.PSBase.Count
 
         # --- Bind grids ---
         Update-Status 'Updating display...' 85
@@ -850,6 +907,12 @@ $ui.AddTagButton.Add_Click({
         return
     }
 
+    $inputProblem = Get-TagInputError -Name $tagName -Value $tagValue
+    if ($inputProblem) {
+        [System.Windows.MessageBox]::Show($inputProblem, 'Validation', 'OK', 'Warning') | Out-Null
+        return
+    }
+
     # Check for duplicate
     $exists = $script:TagQueue | Where-Object { $_.TagName -eq $tagName }
     if ($exists) {
@@ -897,7 +960,7 @@ $ui.ResourceGrid.Add_SelectionChanged({
 function Read-ResourceTagInput {
     param([int]$ResourceCount)
     # Pop a small dialog asking for tag name and value
-    $tagDlgXaml = @"
+    $tagDlgXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         Title="Apply Tag" Width="400" Height="220"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
@@ -928,7 +991,7 @@ function Read-ResourceTagInput {
         </StackPanel>
     </Grid>
 </Window>
-"@
+'@
 
     $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($tagDlgXaml))
     $tagDlg = [System.Windows.Markup.XamlReader]::Load($rdr)
@@ -953,8 +1016,9 @@ function Read-ResourceTagInput {
 
     $tagName  = $tagNameBox.Text.Trim()
     $tagValue = $tagValueBox.Text
-    if ([string]::IsNullOrWhiteSpace($tagName)) {
-        [System.Windows.MessageBox]::Show('Tag name cannot be empty.', 'Validation', 'OK', 'Warning') | Out-Null
+    $inputProblem = Get-TagInputError -Name $tagName -Value $tagValue
+    if ($inputProblem) {
+        [System.Windows.MessageBox]::Show($inputProblem, 'Validation', 'OK', 'Warning') | Out-Null
         return
     }
 
@@ -981,7 +1045,7 @@ $ui.ResTagSelectedButton.Add_Click({
 # ─────────────────────────────────────────────────────────────────
 function Select-TagResourceGroups {
     param([object[]]$Groups)
-    $pickerXaml = @"
+    $pickerXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         Title="Select Resource Groups" Width="560" Height="520"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
@@ -1013,7 +1077,7 @@ function Select-TagResourceGroups {
         </StackPanel>
     </Grid>
 </Window>
-"@
+'@
 
     $rdr = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($pickerXaml))
     $dlg = [System.Windows.Markup.XamlReader]::Load($rdr)
@@ -1167,7 +1231,7 @@ $ui.ExportButton.Add_Click({
                     Location      = $rg.location
                     ResourceGroup = $rg.name
                     Type          = 'microsoft.resources/subscriptions/resourcegroups'
-                    TagCount      = $tagMap.Count
+                    TagCount      = $tagMap.PSBase.Count
                     Tags          = ($tagMap.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
                 })
             }
@@ -1179,11 +1243,11 @@ $ui.ExportButton.Add_Click({
                     Location      = $res.location
                     ResourceGroup = $res.resourceGroup
                     Type          = $res.type
-                    TagCount      = $tagMap.Count
+                    TagCount      = $tagMap.PSBase.Count
                     Tags          = ($tagMap.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
                 })
             }
-            $export | ConvertTo-SpreadsheetSafeRow | Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
+            $export | ConvertTo-SpreadsheetSafeRow | Export-Csv -LiteralPath $dlg.FileName -NoTypeInformation -Encoding UTF8
             Update-Status "Exported $($export.Count) rows to $($dlg.FileName). Formula-like cells are prefixed with [text]." 100
         }
         catch {

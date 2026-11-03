@@ -465,4 +465,139 @@ Describe 'Azure read/write boundary and conflict handling' {
         Should -Invoke Get-AzTag -ModuleName ResourceTagger.Core -Times 0
         Should -Invoke Update-AzTag -ModuleName ResourceTagger.Core -Times 0
     }
+
+    It 'adds MFA guidance when Azure rejects a write for missing multifactor authentication' {
+        $plan = New-TagChangePlan -Target $target -Scope $scope -CurrentTags @{ Owner = 'Alice' } -Tags @{ CostCentre = 'C1' }
+        $result = @(Invoke-TagOperationPlan -Plan @($plan) -Scope $scope -DefaultProfile $context -Confirm:$false `
+            -UpdateAction { throw 'Resource was disallowed by policy. Users must use MFA for Create operation.' })
+        $result[0].Status | Should -Be 'Unverified'
+        $result[0].Detail | Should -Match 'multifactor authentication'
+        $result[0].Detail | Should -Match 're-scan'
+    }
+}
+
+Describe 'Tag names that shadow dictionary members' {
+    It 'keeps every tag when Az returns a typed dictionary with <Name>' -TestCases @(
+        @{ Name = 'Keys' }, @{ Name = 'Count' }, @{ Name = 'Values' }, @{ Name = 'IsReadOnly' }
+    ) {
+        param($Name)
+        $source = [System.Collections.Generic.Dictionary[string, string]]::new()
+        $source[$Name] = 'decoy'
+        $source['Owner'] = 'Alice'
+        $map = ConvertTo-TagHashtable $source
+        $map.PSBase.Count | Should -Be 2
+        $map.ContainsKey($Name) | Should -BeTrue
+        $map['Owner'] | Should -BeExactly 'Alice'
+    }
+
+    It 'does not overwrite an existing tag when another tag is named Keys' {
+        Mock Get-AzTag -ModuleName ResourceTagger.Core {
+            $tags = [System.Collections.Generic.Dictionary[string, string]]::new()
+            $tags['Keys'] = 'decoy'
+            $tags['decoy'] = 'x'
+            $tags['Owner'] = 'ExistingOwner'
+            [pscustomobject]@{ Properties = [pscustomobject]@{ TagsProperty = $tags } }
+        }
+        $plan = @(Get-TagOperationPlan -Targets @($target) -Scope $scope -DefaultProfile $context -Tags @{ Owner = 'NewOwner' })
+        $plan[0].Status | Should -Be 'Skipped'
+        $plan[0].Changes[0].PreviousValue | Should -BeExactly 'ExistingOwner'
+        $plan[0].Changes[0].Reason | Should -Match 'overwrite is disabled'
+    }
+
+    It 'treats a resource with a Count tag as tagged for the Untagged filter and plan' {
+        $tags = [System.Collections.Generic.Dictionary[string, string]]::new()
+        $tags['Count'] = '0'
+        $row = @(Get-ResourceRow -Resources @([pscustomobject]@{
+            name = 'one'; type = 'Microsoft.Test/widgets'; resourceGroup = 'rg'; id = $resourceId; tags = $tags
+        }) -Filter Untagged)
+        $row.Count | Should -Be 0
+        $plan = New-TagChangePlan -Target $target -Scope $scope -CurrentTags (ConvertTo-TagHashtable $tags) `
+            -Tags @{ Owner = 'Bob' } -Selection Untagged
+        $plan.Status | Should -Be 'Skipped'
+    }
+
+    It 'plans with a tag named Count in the queue' {
+        $plan = New-TagChangePlan -Target $target -Scope $scope -CurrentTags @{} -Tags @{ Count = '3'; Keys = 'k' }
+        $plan.Status | Should -Be 'Planned'
+        $plan.Payload.PSBase.Count | Should -Be 2
+        $plan.Detail | Should -Match '^2 tag'
+    }
+}
+
+Describe 'Tag input validation' {
+    It 'accepts an ordinary name and value' {
+        Get-TagInputError -Name 'CostCentre' -Value 'C100' | Should -BeNullOrEmpty
+    }
+
+    It 'rejects the character <Char> in tag names' -TestCases @(
+        @{ Char = '<' }, @{ Char = '>' }, @{ Char = '%' }, @{ Char = '&' }, @{ Char = '\' }, @{ Char = '?' }, @{ Char = '/' }
+    ) {
+        param($Char)
+        Get-TagInputError -Name "bad${Char}name" -Value 'v' | Should -Match 'cannot contain'
+    }
+
+    It 'enforces name and value length limits, with a shorter name limit for storage accounts' {
+        $name = 'n' * 129
+        Get-TagInputError -Name $name -Value 'v' -ResourceId '/subscriptions/s/resourceGroups/r/providers/Microsoft.Compute/virtualMachines/vm' |
+            Should -BeNullOrEmpty
+        Get-TagInputError -Name $name -Value 'v' -ResourceId $resourceId | Should -Match '128'
+        Get-TagInputError -Name ('n' * 513) -Value 'v' | Should -Match '512'
+        Get-TagInputError -Name 'ok' -Value ('v' * 257) | Should -Match '256'
+        Get-TagInputError -Name 'ok' -Value ('v' * 256) | Should -BeNullOrEmpty
+    }
+
+    It 'fails the plan for an invalid tag name instead of attempting a write' {
+        { New-TagChangePlan -Target $target -Scope $scope -CurrentTags @{} -Tags @{ 'a/b' = 'v' } } | Should -Throw '*cannot contain*'
+    }
+
+    It 'does not apply write-only name rules when removing an existing tag' {
+        $plan = New-TagChangePlan -Target $target -Scope $scope -CurrentTags @{ 'legacy/name' = 'v' } `
+            -Tags @{ 'legacy/name' = '' } -Operation Delete
+        $plan.Status | Should -Be 'Planned'
+    }
+
+    It 'blocks a merge that would exceed 50 tags' {
+        $current = @{}
+        1..50 | ForEach-Object { $current["t$_"] = 'v' }
+        { New-TagChangePlan -Target $target -Scope $scope -CurrentTags $current -Tags @{ extra = 'v' } } | Should -Throw '*at most 50*'
+        $plan = New-TagChangePlan -Target $target -Scope $scope -CurrentTags $current -Tags @{ t1 = 'new' } -Overwrite
+        $plan.Status | Should -Be 'Planned'
+    }
+}
+
+Describe 'Target ID canonical form' {
+    It 'rejects <Case>' -TestCases @(
+        @{ Case = 'dot-dot segments'; Suffix = '/../../other' }
+        @{ Case = 'a query string'; Suffix = '?x=1' }
+        @{ Case = 'a fragment'; Suffix = '#frag' }
+        @{ Case = 'encoded separators'; Suffix = '%2F..%2Fother' }
+        @{ Case = 'a backslash'; Suffix = '\other' }
+        @{ Case = 'an empty segment'; Suffix = '//other' }
+        @{ Case = 'a line break'; Suffix = "`nother" }
+    ) {
+        param($Case, $Suffix)
+        { Assert-TagTargetScope -ResourceId ($resourceId + $Suffix) -Scope $scope } | Should -Throw '*canonical*'
+    }
+
+    It 'still accepts a canonical ID' {
+        { Assert-TagTargetScope -ResourceId $resourceId -Scope $scope } | Should -Not -Throw
+    }
+}
+
+Describe 'Spreadsheet text protection beyond strings' {
+    It 'protects formula text through the shared helper' {
+        Protect-SpreadsheetText '=1+1' | Should -BeExactly '[text] =1+1'
+        Protect-SpreadsheetText 'plain' | Should -BeExactly 'plain'
+    }
+
+    It 'stringifies and protects non-string objects while leaving numbers and dates alone' {
+        $row = [pscustomobject]@{
+            Obj = [pscustomobject]@{ x = '=1' }; Arr = @('=1', '=2'); Num = 5; Neg = -3; When = [datetime]'2026-01-02'
+        } | ConvertTo-SpreadsheetSafeRow
+        $row.Obj | Should -Not -Match '^[=+\-@]'
+        $row.Arr | Should -Not -Match '^[=+\-@]'
+        $row.Num | Should -BeOfType ([int])
+        $row.Neg | Should -Be -3
+        $row.When | Should -BeOfType ([datetime])
+    }
 }

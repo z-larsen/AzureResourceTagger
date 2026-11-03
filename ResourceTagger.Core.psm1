@@ -6,7 +6,8 @@ function ConvertTo-TagHashtable {
     $map = @{}
     if ($null -eq $Tags) { return $map }
     if ($Tags -is [System.Collections.IDictionary]) {
-        foreach ($key in $Tags.Keys) { $map[[string]$key] = [string]$Tags[$key] }
+        # Tag names such as 'Keys' or 'Count' shadow dictionary properties, so enumerate instead.
+        foreach ($entry in $Tags.GetEnumerator()) { $map[[string]$entry.Key] = [string]$entry.Value }
     } elseif ($Tags -is [PSCustomObject]) {
         foreach ($property in $Tags.PSObject.Properties) { $map[$property.Name] = [string]$property.Value }
     } else {
@@ -67,6 +68,10 @@ function Assert-TagTargetScope {
         [Parameter(Mandatory)][string]$ResourceId,
         [Parameter(Mandatory)]$Scope
     )
+    if ($ResourceId -match '[\\%?#\x00-\x1f\x7f]' -or $ResourceId.Contains('//') -or
+        (@($ResourceId -split '/') | Where-Object { $_ -eq '.' -or $_ -eq '..' })) {
+        throw "Target '$($ResourceId -replace '[\x00-\x1f\x7f]', '?')' is not a canonical Azure resource ID."
+    }
     $subscriptionPrefix = "/subscriptions/$($Scope.SubscriptionId)/"
     if (-not $ResourceId.StartsWith($subscriptionPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Target '$ResourceId' is outside the scanned subscription."
@@ -105,7 +110,7 @@ function Get-ResourceGroupRow {
         [pscustomobject]@{
             Name        = $resource.name
             Location    = $resource.location
-            TagCount    = $tags.Count
+            TagCount    = $tags.PSBase.Count
             MissingTags = if ($missing.Count) { $missing -join ', ' } else { '-' }
             Tags        = ($tags.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
         }
@@ -120,13 +125,13 @@ function Get-ResourceRow {
     )
     foreach ($resource in $Resources) {
         $tags = ConvertTo-TagHashtable (Get-SafeTags $resource)
-        if ($Filter -eq 'Untagged' -and $tags.Count -gt 0) { continue }
+        if ($Filter -eq 'Untagged' -and $tags.PSBase.Count -gt 0) { continue }
         if ($Filter -eq 'MissingTag' -and $TagName -and $tags.ContainsKey($TagName)) { continue }
         [pscustomobject]@{
             Name          = $resource.name
             Type          = ($resource.type -split '/')[-1]
             ResourceGroup = $resource.resourceGroup
-            TagCount      = $tags.Count
+            TagCount      = $tags.PSBase.Count
             Tags          = ($tags.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
             ResourceId    = $resource.id
         }
@@ -149,6 +154,21 @@ function New-TagPlanEntry {
     }
 }
 
+function Get-TagInputError {
+    param(
+        [string]$Name,
+        [AllowNull()][string]$Value = '',
+        [string]$ResourceId = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Name)) { return 'Tag names cannot be empty.' }
+    $isStorageAccount = $ResourceId -match '(?i)/providers/Microsoft\.Storage/storageAccounts/[^/]+$'
+    $maxName = if ($isStorageAccount) { 128 } else { 512 }
+    if ($Name -match '[<>%&\\?/]') { return "Tag name '$Name' cannot contain < > % & \ ? /." }
+    if ($Name.Length -gt $maxName) { return "Tag name '$Name' is longer than $maxName characters." }
+    if ($null -ne $Value -and $Value.Length -gt 256) { return "The value for tag '$Name' is longer than 256 characters." }
+    return $null
+}
+
 function New-TagChangePlan {
     param(
         [Parameter(Mandatory)]$Target,
@@ -162,20 +182,26 @@ function New-TagChangePlan {
         [string]$SelectionTagName = ''
     )
     Assert-TagTargetScope -ResourceId $Target.Id -Scope $Scope
-    if ($Tags.Count -eq 0) { throw 'At least one tag must be specified.' }
+    if ($Tags.PSBase.Count -eq 0) { throw 'At least one tag must be specified.' }
     if ($Selection -eq 'MissingTag' -and [string]::IsNullOrWhiteSpace($SelectionTagName)) {
         throw 'The missing-tag scope requires a tag name.'
+    }
+    foreach ($name in $Tags.PSBase.Keys) {
+        $value = if ($Operation -eq 'Merge') { [string]$Tags[$name] } else { '' }
+        $problem = if ($Operation -eq 'Merge') { Get-TagInputError -Name $name -Value $value -ResourceId $Target.Id }
+            elseif ([string]::IsNullOrWhiteSpace($name)) { 'Tag names cannot be empty.' }
+        if ($problem) { throw $problem }
     }
 
     $entry = New-TagPlanEntry -Target $Target -Scope $Scope -Operation $Operation -Selection $Selection
     $changes = [System.Collections.Generic.List[object]]::new()
     $selectionReason = ''
-    if ($Selection -eq 'Untagged' -and $CurrentTags.Count -gt 0) { $selectionReason = 'Resource is no longer untagged.' }
+    if ($Selection -eq 'Untagged' -and $CurrentTags.PSBase.Count -gt 0) { $selectionReason = 'Resource is no longer untagged.' }
     if ($Selection -eq 'MissingTag' -and $CurrentTags.ContainsKey($SelectionTagName)) {
         $selectionReason = "The first queued tag '$SelectionTagName' already exists."
     }
 
-    foreach ($key in ($Tags.Keys | Sort-Object)) {
+    foreach ($key in ($Tags.PSBase.Keys | Sort-Object)) {
         if ([string]::IsNullOrWhiteSpace($key)) { throw 'Tag names cannot be empty.' }
         $exists = $CurrentTags.ContainsKey($key)
         $previous = if ($exists) { [string]$CurrentTags[$key] } else { $null }
@@ -208,9 +234,13 @@ function New-TagChangePlan {
         })
     }
     $entry.Changes = $changes.ToArray()
-    if ($entry.Payload.Count -gt 0) {
+    $added = @($changes | Where-Object { $_.Action -eq 'Add' }).Count
+    if ($Operation -eq 'Merge' -and ($CurrentTags.PSBase.Count + $added) -gt 50) {
+        throw "Applying this would give the resource $($CurrentTags.PSBase.Count + $added) tags. Azure allows at most 50."
+    }
+    if ($entry.Payload.PSBase.Count -gt 0) {
         $entry.Status = 'Planned'
-        $entry.Detail = "$($entry.Payload.Count) tag change(s) planned."
+        $entry.Detail = "$($entry.Payload.PSBase.Count) tag change(s) planned."
     } else {
         $entry.Detail = 'No changes required.'
     }
@@ -282,7 +312,7 @@ function Invoke-TagOperationPlan {
             Assert-TagScope -Expected $entry.Scope -Actual $Scope
             Assert-TagScope -Expected $Scope -Actual (New-TagScope -Context $DefaultProfile -ResourceGroup $Scope.ResourceGroup)
             Assert-TagTargetScope -ResourceId $entry.ResourceId -Scope $Scope
-            if (-not $PSCmdlet.ShouldProcess($entry.ResourceId, "$($entry.Operation) $($entry.Payload.Count) tag(s)")) {
+            if (-not $PSCmdlet.ShouldProcess($entry.ResourceId, "$($entry.Operation) $($entry.Payload.PSBase.Count) tag(s)")) {
                 $entry.Status = 'Skipped'
                 $entry.Detail = 'Execution was not approved (WhatIf or confirmation declined).'
                 $entry
@@ -295,7 +325,7 @@ function Invoke-TagOperationPlan {
                 $present = $current.ContainsKey($_.TagName)
                 $present -ne $_.PreviousExists -or ($present -and [string]$current[$_.TagName] -cne $_.PreviousValue)
             })
-            if ($conflicts.Count -gt 0 -or ($entry.Selection -eq 'Untagged' -and $current.Count -gt 0)) {
+            if ($conflicts.Count -gt 0 -or ($entry.Selection -eq 'Untagged' -and $current.PSBase.Count -gt 0)) {
                 $entry.Status = 'Conflict'
                 $entry.Detail = 'Tags changed after preview. No write attempted; re-scan and preview again.'
                 $entry
@@ -325,6 +355,8 @@ function Invoke-TagOperationPlan {
         } catch {
             $entry.Status = if ($writeStarted) { 'Unverified' } else { 'Error' }
             $entry.Detail = $_.Exception.Message
+            $hint = Get-TagWriteErrorHint -Message $entry.Detail
+            if ($hint) { $entry.Detail += " $hint" }
             if ($writeStarted) { $entry.Detail += ' The write outcome is uncertain; re-scan before retrying.' }
         }
         $entry
@@ -361,6 +393,24 @@ function Get-TagPlanRow {
     }
 }
 
+function Get-TagWriteErrorHint {
+    param([string]$Message = '')
+    if ($Message -match '(?i)multi-?factor|\bMFA\b|claims ?challenge|SharedTokenCacheCredential') {
+        return 'Azure may require multifactor authentication (MFA) for writes. Sign in again with MFA, then re-scan and retry.'
+    }
+    return $null
+}
+
+function Protect-SpreadsheetText {
+    param([AllowNull()][string]$Text)
+    if ($null -eq $Text) { return $Text }
+    if ($Text -match '^[\s\p{C}'']*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20]' -or $Text -match '^[\t\r\n]') {
+        # A visible text prefix survives spreadsheet CSV save/reopen, unlike quote-only escaping.
+        return '[text] ' + $Text
+    }
+    return $Text
+}
+
 function ConvertTo-SpreadsheetSafeRow {
     [CmdletBinding()]
     param(
@@ -370,10 +420,8 @@ function ConvertTo-SpreadsheetSafeRow {
         $row = [ordered]@{}
         foreach ($property in $InputObject.PSObject.Properties) {
             $value = $property.Value
-            if ($value -is [string] -and
-                ($value -match '^[\s\p{C}'']*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20]' -or $value -match '^[\t\r\n]')) {
-                # A visible text prefix survives spreadsheet CSV save/reopen, unlike quote-only escaping.
-                $value = '[text] ' + $value
+            if ($null -ne $value -and -not ($value.GetType().IsPrimitive -or $value -is [decimal] -or $value -is [datetime])) {
+                $value = Protect-SpreadsheetText ([string]$value)
             }
             $row[$property.Name] = $value
         }
@@ -383,4 +431,5 @@ function ConvertTo-SpreadsheetSafeRow {
 
 Export-ModuleMember -Function ConvertTo-TagHashtable, Get-SafeTags, New-TagScope, Test-TagScopeMatch,
     Assert-TagScope, Assert-TagTargetScope, Get-RequiredTagName, Get-ResourceGroupRow, Get-ResourceRow,
+    Get-TagInputError, Get-TagWriteErrorHint, Protect-SpreadsheetText,
     New-TagChangePlan, Get-TagOperationPlan, Invoke-TagOperationPlan, Get-TagPlanRow, ConvertTo-SpreadsheetSafeRow

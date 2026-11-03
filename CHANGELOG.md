@@ -5,8 +5,29 @@ guidance, see the [README](README.md).
 
 ## Unreleased
 
+### Security
+
+- Copying rows from any grid now neutralizes formula-like text, matching the CSV export.
+- Tags named `Keys`, `Count`, or other dictionary member names no longer bypass the overwrite default, the **Untagged** filter, conflict checks, or write verification.
+- The CSV sanitizer now covers non-string values.
+- KQL literals are escaped instead of stripped. Tenant and subscription names drop control and bidirectional characters.
+- Target IDs must be canonical Azure resource IDs. Paths use `-LiteralPath`, and the XAML here-strings no longer expand variables.
+
+### Fixed
+
+- Replaced the ignored `AZURE_LOGIN_EXPERIENCE_V2` variable with `Update-AzConfig -LoginExperienceV2 Off`.
+- **Resource Group** scope now requires a specific resource group instead of scanning the subscription.
+
+### Added
+
+- Tag name, value, and 50-tag limit checks before planning a write.
+- MFA guidance when Azure rejects a write, and a note for Az.Accounts earlier than 5.2.0.
+- Retry with backoff for Resource Graph throttling.
+- 41 regression tests (143 total).
+
 ### Changed
 
+- README now covers the PowerShell 7.6 LTS floor, Az 16, MFA, tag limits, and signing guidance.
 - Reworked the README around setup, scanning, previews, live operations, and troubleshooting.
 - Applied the Microsoft Writing Style Guide with direct, conversational wording and consistent UI references.
 - Clarified result statuses, CSV protections, test coverage, and the limits of automated validation.

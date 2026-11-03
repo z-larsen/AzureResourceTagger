@@ -1,6 +1,6 @@
 # Azure Resource Tagger
 
-![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell&logoColor=white)
+![PowerShell 7.6 LTS and 5.1](https://img.shields.io/badge/PowerShell-7.6%20LTS%20%7C%205.1-blue?logo=powershell&logoColor=white)
 ![Azure Az Modules](https://img.shields.io/badge/Azure-Az%20Modules-0078D4?logo=microsoftazure&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
 ![Version 1.3.0](https://img.shields.io/badge/Version-1.3.0-brightgreen)
@@ -31,8 +31,8 @@ existing values, or preparing a subscription for Azure Policy tag enforcement.
 
 ## Prerequisites
 
-- Windows with Windows PowerShell 5.1 or PowerShell 7. WPF doesn't run on macOS or Linux.
-- The `Az.Accounts`, `Az.Resources`, and `Az.ResourceGraph` PowerShell modules.
+- Windows with PowerShell 7.6 (LTS) or Windows PowerShell 5.1. WPF doesn't run on macOS or Linux. PowerShell 7.4 and 7.5 reach end of support on November 10, 2026. Windows PowerShell 5.1 needs .NET Framework 4.7.2 or later for the Az modules.
+- The `Az.Accounts` (5.2.0 or later), `Az.Resources`, and `Az.ResourceGraph` PowerShell modules. Az 16 is the current major version. Az.Accounts 5.2.0 or later returns clear multifactor authentication (MFA) errors.
 - An Azure account with access to the subscription you want to scan.
 
 You don't need local administrator rights. The app runs in your user context.
@@ -64,8 +64,11 @@ If the required Azure modules aren't installed, install them in the PowerShell
 environment you'll use to run the app:
 
 ```powershell
-Install-Module Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser
+Install-Module Az.Accounts -Scope CurrentUser -Repository PSGallery -MinimumVersion 5.2.0
+Install-Module Az.Resources, Az.ResourceGraph -Scope CurrentUser -Repository PSGallery
 ```
+
+If you use PSResourceGet, `Install-PSResource Az.Accounts, Az.Resources, Az.ResourceGraph -Scope CurrentUser` works too.
 
 Start the app in single-threaded apartment (STA) mode, which WPF requires.
 
@@ -220,14 +223,19 @@ Removing it can turn metadata into an active formula. Treat the CSV as a report,
 not a file for importing unchanged tag data back into Azure.
 
 Review reports before sharing them. Resource names and tag values can contain
-sensitive information.
+sensitive information. Tags are plain text, so don't store secrets or other
+sensitive values in them.
+
+Copying rows from a grid applies the same `[text] ` protection to formula-like cells.
 
 ## Know the limits
 
 - **Scans can lag behind Azure.** Resource Graph is eventually consistent. New resources and recent tag changes might not appear immediately.
 - **Previews refresh known targets only.** Fresh ARM reads update tag information for resources already in the scan. They don't discover additional resources.
 - **Conflict checks aren't a lock.** The app checks affected tags before writing, but another tool can still change them between that read and the update. Azure tag updates aren't atomic compare-and-swap operations.
-- **Azure still enforces its rules.** Permissions, resource locks, policy, supported resource types, and tag limits can prevent changes.
+- **Azure still enforces its rules.** Permissions, resource locks, policy, supported resource types, and tag limits can prevent changes. Resources allow up to 50 tags, and some types allow only 15. Tag names can't contain `< > % & \ ? /`, and can be up to 512 characters (128 for storage accounts). Values can be up to 256 characters. The app checks the name and value rules and the 50-tag cap before it plans a write. Azure enforces lower resource-specific limits.
+- **Resource group scope needs a specific group.** If you set the scope to **Resource Group**, choose one. The app doesn't fall back to the whole subscription.
+- **User accounts need MFA for writes.** Azure requires MFA for create, update, and delete operations from user accounts. Reads don't need it, and managed and workload identities are exempt.
 - **Reads can pause the UI.** Inventory and planning reads aren't fully asynchronous. This release doesn't provide a cancellation workflow.
 - **Tests aren't production approval.** Validate the tool in an approved test subscription before using it in production.
 
@@ -240,18 +248,23 @@ sensitive information.
 | Apply or export is disabled. | Connect and complete a new scan. Scope changes and approved live runs clear the previous inventory. |
 | Recent tags aren't in the scan. | Allow time for Resource Graph to update, then scan again. Previews read current tags for known targets. |
 | A write is denied. | Check the error details, target-scope permissions, resource locks, and Azure Policy. |
+| A write fails with "Users must use MFA". | Sign out, then sign in again with `Connect-AzAccount -Tenant <tenant-id> -ClaimsChallenge <claims>` using the values in the error. Update Az.Accounts to 5.2.0 or later. |
 | A result is **Conflict** or **Unverified**. | Inspect the resource and scan again. Don't assume a retry is safe. |
 
 If Windows marks downloaded files as blocked, review the source and files first.
 Then, from this repository folder, unblock only the project files you trust:
 
 ```powershell
-Get-ChildItem -Path . -Recurse -File -Include *.ps1, *.psm1, *.xaml | Unblock-File
+Get-Item -LiteralPath .\Start-ResourceTagger.ps1, .\ResourceTagger.Core.psm1, .\gui\MainWindow.xaml, .\gui\TagPreview.xaml | Unblock-File
 ```
 
 Unblocking doesn't override an execution policy that requires signed scripts.
 Follow your organization's [PowerShell execution policy](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_execution_policies)
 rather than bypassing it.
+
+The scripts and XAML files aren't signed. If you deploy the tool to shared
+machines, sign the scripts with Authenticode and restrict write access to the
+folder so others can't change the code you run.
 
 ## Run the tests
 
@@ -272,7 +285,8 @@ Import-Module Pester -RequiredVersion 5.7.1 -ErrorAction Stop
 Invoke-Pester -Path .\tests -Output Detailed
 ```
 
-Version 1.3.0 passed all 102 tests on Windows PowerShell 5.1 and PowerShell 7.6.6.
+The unreleased changes passed all 143 tests on Windows PowerShell 5.1 and PowerShell 7.6.9,
+with Pester 5.7.1 and 6.0.0.
 Coverage includes scope checks, filters, tag planning, dry runs, conflicts, write
 verification, CSV formula protection, UI events, and background worker failures.
 

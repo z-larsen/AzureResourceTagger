@@ -246,6 +246,82 @@ Describe 'Azure Resource Tagger UI' {
         }
     }
 
+    Describe 'Hardening helpers' {
+        It 'neutralizes formulas when rows are copied from <Grid>' -TestCases @(
+            @{ Grid = 'ResourceGrid' }, @{ Grid = 'RGGrid' }, @{ Grid = 'TagSummaryGrid' },
+            @{ Grid = 'TagQueueGrid' }, @{ Grid = 'ApplyResultsGrid' }, @{ Grid = 'RemoveResultsGrid' }
+        ) {
+            param($Grid)
+            $copied = & $uiModule {
+                param($gridName)
+                $grid = $ui[$gridName]
+                $eventArgs = [System.Windows.Controls.DataGridRowClipboardEventArgs]::new($null, 0, 1, $false)
+                $column = [System.Windows.Controls.DataGridTextColumn]::new()
+                $eventArgs.ClipboardRowContent.Add([System.Windows.Controls.DataGridClipboardCellContent]::new($null, $column, '=1+1'))
+                $eventArgs.ClipboardRowContent.Add([System.Windows.Controls.DataGridClipboardCellContent]::new($null, $column, 'plain'))
+                $method = [System.Windows.Controls.DataGrid].GetMethod('OnCopyingRowClipboardContent',
+                    [System.Reflection.BindingFlags]'NonPublic,Instance')
+                $method.Invoke($grid, @($eventArgs)) | Out-Null
+                @($eventArgs.ClipboardRowContent | ForEach-Object { $_.Content })
+            } $Grid
+            $copied | Should -Be @('[text] =1+1', 'plain')
+        }
+
+        It 'neutralizes formulas when rows are copied from the preview grid' {
+            $copied = & $uiModule {
+                $owner = $window
+                $window = $null
+                try {
+                    $dialog = New-TagPreviewWindow -Plan @() -Scope $script:ScanScope -DryRun $true
+                    $grid = $dialog.FindName('PlanGrid')
+                    $eventArgs = [System.Windows.Controls.DataGridRowClipboardEventArgs]::new($null, 0, 0, $false)
+                    $eventArgs.ClipboardRowContent.Add([System.Windows.Controls.DataGridClipboardCellContent]::new(
+                        $null, [System.Windows.Controls.DataGridTextColumn]::new(), '@SUM(A1)'))
+                    [System.Windows.Controls.DataGrid].GetMethod('OnCopyingRowClipboardContent',
+                        [System.Reflection.BindingFlags]'NonPublic,Instance').Invoke($grid, @($eventArgs)) | Out-Null
+                    $eventArgs.ClipboardRowContent[0].Content
+                    $dialog.Close()
+                } finally { $window = $owner }
+            }
+            $copied | Should -BeExactly '[text] @SUM(A1)'
+        }
+
+        It 'escapes backslashes and single quotes in KQL literals' {
+            $escaped = & $uiModule { ConvertTo-KqlLiteral "x'y\z" }
+            $escaped | Should -BeExactly "x\'y\\z"
+        }
+
+        It 'removes control and bidirectional characters from display names' {
+            $text = & $uiModule { ConvertTo-DisplayText ("Contoso" + [char]0x202E + "evil" + [char]0x200B + [char]0x0007) }
+            $text | Should -BeExactly 'Contosoevil'
+        }
+
+        It 'requires an explicit resource group when the scope level is Resource Group' {
+            $result = & $uiModule {
+                $ui.ScopeLevel.SelectedIndex = 1
+                $ui.RGSelector.SelectedIndex = 0
+                $message = try { Get-CurrentTagScope | Out-Null; '' } catch { $_.Exception.Message }
+                $ui.RGSelector.SelectedIndex = 1
+                [pscustomobject]@{ Message = $message; Group = (Get-CurrentTagScope).ResourceGroup }
+            }
+            $result.Message | Should -Match 'Select a specific resource group'
+            $result.Group | Should -BeExactly 'example'
+        }
+
+        It 'treats a tag named Keys as a real key in the Remove list' {
+            $items = & $uiModule {
+                $script:AllResources = @([pscustomobject]@{
+                    id = 'x'; name = 'x'; type = 'Microsoft.Test/widgets'; resourceGroup = 'example'; location = 'test'
+                    tags = @{ Keys = 'Environment'; Owner = 'a' }
+                })
+                $script:AllRGs = @()
+                Update-RemoveTagList
+                @($ui.RemoveTagSelector.Items)
+            }
+            $items | Should -Be @('Keys', 'Owner')
+        }
+    }
+
     Describe 'Shared workflow integration' {
         It 'routes apply scope <Index> through the same planner' -TestCases @(
             @{ Index = 0; Count = 2; Selection = 'All' },
